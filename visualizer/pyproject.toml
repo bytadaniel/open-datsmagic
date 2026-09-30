@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datsmagic-visualizer"
+version = "0.1.0"
+description = "2D GUI visualizer and telemetry client for DatsMagic simulation"
+authors = [{ name = "DatsMagic Team" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pygame>=2.5.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+visualizer = "visualizer.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
