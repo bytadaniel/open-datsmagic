@@ -3,6 +3,8 @@
 import pytest
 from visualizer.client import (
     AnomalyState,
+    CarpetState,
+    EnemyCarpetState,
     EnemyState,
     PlayerState,
     TreasureState,
@@ -529,6 +531,117 @@ def test_arena_boundaries_and_circular_entities_render_headless():
     # Пиксель в крайнем левом углу экрана (50, 50) при zoom=0.6 и центре (500, 500) находится за пределами арены
     corner_color = screen.get_at((50, 50))[:3]
     assert corner_color == config.colors.BACKGROUND_OUTSIDE
+
+    pygame.quit()
+
+
+def test_tc_vis_fleet_01_render_player_and_enemy_fleets():
+    """FE-012 TC-VIS-FLEET-01: Headless-рендер корректно отображает 5 ковров игрока и ковры соперников."""
+    import os
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    import pygame
+    from visualizer.config import VisualizerConfig
+    from visualizer.renderer import Camera, SceneRenderer
+    from visualizer.hud import HudRenderer
+
+    pygame.init()
+    pygame.font.init()
+
+    config = VisualizerConfig(screen_width=1280, screen_height=720)
+    screen = pygame.display.set_mode((1280, 720))
+    camera = Camera(offset_x=500.0, offset_y=500.0, zoom=1.0, screen_width=1280, screen_height=720)
+    renderer = SceneRenderer(config)
+    hud = HudRenderer(config)
+
+    # 1. Создаем игрока с флотом из 5 ковров (один из них оглушен, один уничтожен)
+    carpets = [
+        CarpetState(id="team_alpha_0", status="normal", position=Vector2D(500.0, 500.0), velocity=Vector2D(2.0, 1.0)),
+        CarpetState(id="team_alpha_1", status="stunned", position=Vector2D(470.0, 470.0), velocity=Vector2D(0.0, 0.0)),
+        CarpetState(id="team_alpha_2", status="normal", position=Vector2D(530.0, 470.0), velocity=Vector2D(-1.0, 2.0)),
+        CarpetState(id="team_alpha_3", status="destroyed", position=Vector2D(470.0, 530.0), velocity=Vector2D(0.0, 0.0)),
+        CarpetState(id="team_alpha_4", status="normal", position=Vector2D(530.0, 530.0), velocity=Vector2D(1.0, -1.0)),
+    ]
+    player = PlayerState(
+        id="team_alpha",
+        score=350,
+        status="normal",
+        position=Vector2D(500.0, 500.0),
+        velocity=Vector2D(2.0, 1.0),
+        max_acceleration=5.0,
+        max_velocity=20.0,
+        carpets=carpets,
+    )
+    assert player.active_carpets_count == 4
+
+    # 2. Создаем противника с флотом ковров
+    enemy_carpets = [
+        EnemyCarpetState(id="enemy_omega_0", position=Vector2D(700.0, 700.0), velocity=Vector2D(-3.0, 0.0)),
+        EnemyCarpetState(id="enemy_omega_1", position=Vector2D(730.0, 700.0), velocity=Vector2D(-2.0, 1.0)),
+    ]
+    enemy = EnemyState(
+        id="enemy_omega",
+        position=Vector2D(700.0, 700.0),
+        velocity=Vector2D(-3.0, 0.0),
+        carpets=enemy_carpets,
+    )
+
+    # 3. Отрисовка флота игрока и флота противника
+    renderer.draw_player_fleet(screen, camera, player, current_time=0.5)
+    renderer.draw_enemy_fleet(screen, camera, enemy, current_time=0.5)
+
+    # 4. Проверка и отрисовка анимации взрыва:
+    # Разрушенный ковер team_alpha_3 автоматически породил 1 взрыв
+    assert len(renderer.explosions) == 1
+    # Добавляем еще один взрыв вручную
+    renderer.add_explosion(700.0, 700.0)
+    assert len(renderer.explosions) == 2
+    renderer.draw_explosions(screen, camera, dt=0.016)
+
+    # 5. Отрисовка расширенного HUD с метриками состава флота
+    snap = WorldSnapshot(tick=120, game_status="active", player=player, enemies=[enemy])
+    hud.draw(screen, snap, is_connected=True, fps=60.0, zoom=1.0, follow_mode=False)
+
+    pygame.quit()
+
+
+def test_tc_vis_coins_01_progressive_coin_palette():
+    """FE-012 TC-VIS-COINS-01: Монеты с номиналами 50, 150, 300, 750 отрисовываются цветами палитры."""
+    import os
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    import pygame
+    from visualizer.config import VisualizerConfig, Colors
+    from visualizer.renderer import Camera, SceneRenderer
+
+    pygame.init()
+    pygame.font.init()
+
+    config = VisualizerConfig(screen_width=800, screen_height=600)
+    screen = pygame.display.set_mode((800, 600))
+    camera = Camera(offset_x=250.0, offset_y=250.0, zoom=1.0, screen_width=800, screen_height=600)
+    renderer = SceneRenderer(config)
+
+    # 1. Проверка соответствия цветов градаций номиналов
+    assert renderer.get_coin_tier_color(50) == (190, 110, 60)       # Bronze (Common)
+    assert renderer.get_coin_tier_color(150) == (210, 220, 230)     # Silver
+    assert renderer.get_coin_tier_color(300) == (255, 215, 0)       # Gold
+    assert renderer.get_coin_tier_color(750) == (220, 20, 60)       # Legendary Ruby
+
+    # Проверка приватного метода _get_coin_tier_color
+    assert renderer._get_coin_tier_color(50) == Colors.COIN_COMMON
+    assert renderer._get_coin_tier_color(150) == Colors.COIN_SILVER
+    assert renderer._get_coin_tier_color(300) == Colors.COIN_GOLD
+    assert renderer._get_coin_tier_color(750) == Colors.COIN_LEGENDARY
+
+    # 2. Отрисовка монет каждого тира на Surface без падений
+    coins = [
+        TreasureState(id="coin_bronze", type="common", position=Vector2D(100.0, 100.0), value=50),
+        TreasureState(id="coin_silver", type="silver", position=Vector2D(200.0, 100.0), value=150),
+        TreasureState(id="coin_gold", type="gold", position=Vector2D(300.0, 100.0), value=300),
+        TreasureState(id="coin_ruby", type="legendary", position=Vector2D(400.0, 100.0), value=750),
+    ]
+
+    for coin in coins:
+        renderer.draw_treasure(screen, camera, coin, current_time=0.5)
 
     pygame.quit()
 

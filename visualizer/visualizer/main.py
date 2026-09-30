@@ -125,7 +125,7 @@ class VisualizerApp:
                     self.camera.offset_y += (p.position.y - self.camera.offset_y) * min(1.0, dt * 10.0)
 
                 # 3. Отрисовка кадра
-                self._render_frame(snapshot, current_time)
+                self._render_frame(snapshot, current_time, dt)
 
                 # 4. Ограничение FPS
                 self.clock.tick(self.config.fps)

@@ -61,18 +61,33 @@ flowchart TD
 
 ## 3. План реализации
 
-1. **Обновление `visualizer/visualizer/client.py`**:
-   - Поддержка структуры `carpets: List[CarpetState]` в `PlayerState` и `EnemyState`.
-2. **Обновление `visualizer/visualizer/renderer.py`**:
-   - Реализация отрисовки списка ковров с номерами.
-   - Метод `_get_coin_tier_color(value: int)`.
-   - Отрисовка взрыва взаимного столкновения двух ковров.
-3. **Обновление `visualizer/visualizer/hud.py`**:
-   - Панель флота: индикаторы активности каждого из 5 ковров (`[1] [2] [3] [4] [5]`).
+- [x] **Шаг 1: Обновление `visualizer/visualizer/client.py`**:
+  - Добавлены структуры `CarpetState` и `EnemyCarpetState` со статусами, флагами оглушения/уничтожения.
+  - Поддержка структуры `carpets: List[CarpetState]` в `PlayerState` и `EnemyCarpetState` в `EnemyState`.
+- [x] **Шаг 2: Обновление цветовой палитры в `visualizer/visualizer/config.py`**:
+  - Цвета тиров сокровищ (`COIN_COMMON`, `COIN_SILVER`, `COIN_GOLD`, `COIN_LEGENDARY`, `COIN_LEGENDARY_HALO`, `COIN_SHINE`).
+  - Цвета частиц взрывов (`EXPLOSION_FIRE`, `EXPLOSION_SPARK`, `EXPLOSION_SMOKE`).
+- [x] **Шаг 3: Обновление `visualizer/visualizer/renderer.py`**:
+  - Реализация отрисовки флота ковров игрока (`draw_player_fleet`) и противника (`draw_enemy_fleet`) с маркерами `#1`..`#5`.
+  - Метод `_get_coin_tier_color(value: int)` и публичный `get_coin_tier_color(value: int)`.
+  - Динамический размер монет и пульсирующий рубиновый ореол для легендарных сокровищ ($V \ge 500$).
+  - Система частиц взрыва `ExplosionEffect` и автоматический триггер взрыва при переходе ковра в статус `destroyed`.
+- [x] **Шаг 4: Обновление `visualizer/visualizer/hud.py`**:
+  - Панель флота: индикаторы активности каждого из 5 ковров (`[#1]`..`[#5]`) с цветовой индикацией статуса (`normal`, `stunned`, `destroyed`).
+  - Метрика `Fleet Status (X/5 active)`.
 
 ---
 
 ## 4. Тестовые сценарии
 
-- `TC-VIS-FLEET-01`: Headless-рендер корректно отображает 5 ковров управляемого игрока и ковры соперников без исключений.
-- `TC-VIS-COINS-01`: Монеты с номиналами 50, 150, 300, 750 отрисовываются соответствующими цветами палитры.
+- [x] `TC-VIS-FLEET-01`: Headless-рендер корректно отображает 5 ковров управляемого игрока и ковры соперников без исключений (`test_tc_vis_fleet_01_render_player_and_enemy_fleets`).
+- [x] `TC-VIS-COINS-01`: Монеты с номиналами 50, 150, 300, 750 отрисовываются соответствующими цветами палитры (`test_tc_vis_coins_01_progressive_coin_palette`).
+
+---
+
+## 5. История изменений
+
+| Версия | Дата | Автор | Изменение |
+|---|---|---|---|
+| 1.0 | 2026-09-30 | Lead Architect & AI Agent | Начальная спецификация визуализации флота из 5 ковров и динамической градации монет |
+| 1.1 | 2026-09-30 | AI Agent | Полная реализация и успешная валидация TC-VIS-FLEET-01 и TC-VIS-COINS-01 |

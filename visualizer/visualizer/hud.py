@@ -16,6 +16,7 @@ class HudRenderer:
         self._font_title = pygame.font.SysFont("Arial", 16, bold=True)
         self._font_text = pygame.font.SysFont("Arial", 13, bold=False)
         self._font_bold = pygame.font.SysFont("Arial", 13, bold=True)
+        self._font_small = pygame.font.SysFont("Arial", 11, bold=True)
         self._font_banner_title = pygame.font.SysFont("Arial", 22, bold=True)
         self._font_banner_sub = pygame.font.SysFont("Arial", 13, bold=False)
 
