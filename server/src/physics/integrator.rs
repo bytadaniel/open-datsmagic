@@ -21,7 +21,6 @@ pub trait PhysicsIntegrator: Send + Sync {
     /// - `max_velocity`: Максимальный модуль скорости V_max
     /// - `friction`: Коэффициент трения k_f
     /// - `dt`: Шаг времени тика в секундах Δt
-    /// - `is_stunned`: Флаг нахождения в состоянии оглушения
     ///
     /// # Возвращает:
     /// Кортеж `(P_new, V_new)` с обновленными координатами и скоростью.
@@ -36,7 +35,6 @@ pub trait PhysicsIntegrator: Send + Sync {
         max_velocity: f64,
         friction: f64,
         dt: f64,
-        is_stunned: bool,
     ) -> (Vec2, Vec2);
 }
 
@@ -55,7 +53,6 @@ impl PhysicsIntegrator for EulerIntegrator {
         max_velocity: f64,
         friction: f64,
         dt: f64,
-        is_stunned: bool,
     ) -> (Vec2, Vec2) {
         // Защитная обработка параметров
         let position = position.sanitize_or_zero();
@@ -88,7 +85,7 @@ impl PhysicsIntegrator for EulerIntegrator {
         };
 
         // Шаг 1: Валидация и ограничение управляющего ускорения
-        let effective_accel = compute_effective_accel(command_accel, max_accel, is_stunned);
+        let effective_accel = compute_effective_accel(command_accel, max_accel);
 
         // Шаг 2 и 3: Обновление скорости с учетом трения и внешних сил
         let total_accel = combine_forces(effective_accel, environment_forces);
@@ -119,8 +116,7 @@ mod tests {
         let dt = 0.2;
         let friction = 0.98;
 
-        let (new_pos, new_vel) =
-            integrator.step(pos, vel, cmd, env, 5.0, 20.0, friction, dt, false);
+        let (new_pos, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, friction, dt);
 
         assert!((new_vel.x - 9.8).abs() < 1e-9);
         assert!((new_vel.y - 0.0).abs() < 1e-9);
@@ -137,7 +133,7 @@ mod tests {
         let env = Vec2::ZERO;
         let dt = 0.2;
 
-        let (_, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, 1.0, dt, false);
+        let (_, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, 1.0, dt);
 
         // Применяется ускорение (5.0, 0.0), скорость = (5.0 * 0.2, 0.0) = (1.0, 0.0)
         assert!((new_vel.x - 1.0).abs() < 1e-9);
@@ -153,25 +149,25 @@ mod tests {
         let env = Vec2::ZERO;
         let dt = 0.5; // (19.0 * 1.0) + (5.0 * 0.5) = 21.5 > 20.0
 
-        let (_, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, 1.0, dt, false);
+        let (_, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, 1.0, dt);
 
         assert!((new_vel.x - 20.0).abs() < 1e-9);
         assert_eq!(new_vel.length(), 20.0);
     }
 
     #[test]
-    fn test_euler_stunned_zeroes_accel() {
+    fn test_euler_anomaly_force_does_not_disable_command() {
         let integrator = EulerIntegrator;
         let pos = Vec2::ZERO;
         let vel = Vec2::new(10.0, 0.0);
-        let cmd = Vec2::new(10.0, 10.0);
-        let env = Vec2::ZERO;
+        let cmd = Vec2::new(10.0, 0.0);
         let dt = 0.2;
 
-        let (_, new_vel) = integrator.step(pos, vel, cmd, env, 5.0, 20.0, 0.98, dt, true);
+        let (_, new_vel) =
+            integrator.step(pos, vel, cmd, Vec2::new(-2.0, 0.0), 5.0, 20.0, 0.98, dt);
 
-        // Так как игрок оглушен, команда игнорируется, скорость затухает только от трения
-        assert!((new_vel.x - 9.8).abs() < 1e-9);
+        // Full command and opposing environment force are both applied.
+        assert!((new_vel.x - 10.4).abs() < 1e-9);
         assert!((new_vel.y - 0.0).abs() < 1e-9);
     }
 }

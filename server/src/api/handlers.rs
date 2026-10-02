@@ -1,11 +1,4 @@
-//! # Обработчики HTTP-эндпоинтов REST API
-//!
-//! Модуль реализует логику обработки запросов:
-//! - [`auth_middleware`]: проверка заголовка `X-Auth-Token`
-//! - [`get_game_state`]: `GET /api/game/state`
-//! - [`post_command`]: `POST /api/carpet/command`
-//!
-//! в соответствии со спецификацией [`FE-004`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/features/FE-004-simulation-rest-api.md).
+//! Обработчики единственного публичного API DatsMagic: `POST /play/magcarp/player/move`.
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Request, State};
@@ -14,263 +7,268 @@ use axum::response::Response;
 use axum::Json;
 
 use crate::engine::command_buffer::CommandError;
-use crate::engine::state::{PlayerState, SessionStatus};
+use crate::engine::state::{CarpetState, PlayerState, WorldSnapshot};
 use crate::engine::{GameEngine, PlayerCommand};
 use crate::physics::Vec2;
-use crate::spatial::Treasure;
+use crate::spatial::{SimpleRng, WorldSpatialEngine};
 
 use super::dto::{
-    AnomalyDto, CarpetDto, CommandResponseDto, EnemyCarpetDto, EnemyDto, GameStateResponseDto,
-    PlayerDto,
+    LegacyAnomalyDto, LegacyBountyDto, LegacyDesertDto, LegacyMoveRequestDto, LegacyTransportDto,
+    LegacyUnitDto,
 };
 use super::errors::ApiError;
 
-/// Имя HTTP-заголовка авторизации команды
 pub const AUTH_HEADER_NAME: &str = "x-auth-token";
 
-/// Токен авторизации игрока / команды
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthToken(pub String);
 
-/// Middleware проверки заголовка X-Auth-Token (FE-004 Шаг 2)
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, ApiError> {
-    let header_val = req
+    let header = req
         .headers()
         .get(AUTH_HEADER_NAME)
         .or_else(|| req.headers().get("X-Auth-Token"));
-
-    let token = match header_val {
-        Some(val) => {
-            let s = val.to_str().map_err(|_| ApiError::Unauthorized)?;
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
+    let token = match header {
+        Some(value) => {
+            let value = value.to_str().map_err(|_| ApiError::Unauthorized)?.trim();
+            if value.is_empty() {
                 return Err(ApiError::Unauthorized);
             }
-            trimmed.to_string()
+            value.to_string()
         }
         None => return Err(ApiError::Unauthorized),
     };
-
     req.extensions_mut().insert(AuthToken(token));
     Ok(next.run(req).await)
 }
 
-/// Обработчик GET /api/game/state (FE-004 / FE-010)
-pub async fn get_game_state(
-    Extension(token): Extension<AuthToken>,
-    State(engine): State<GameEngine>,
-) -> Result<Json<GameStateResponseDto>, ApiError> {
-    let snapshot = engine.get_snapshot();
-
-    // 1. Поиск или автоматическая регистрация игрока
-    let player_id = token.0;
-    let player = if let Some(p) = snapshot.world.players.get(&player_id) {
-        let mut carpets: Vec<CarpetDto> = p
-            .carpets
-            .values()
-            .map(|c| CarpetDto {
-                id: c.id.clone(),
-                status: c.status.clone(),
-                position: Vec2::new(c.position.0, c.position.1),
-                velocity: Vec2::new(c.velocity.0, c.velocity.1),
-                max_acceleration: c.max_acceleration,
-                max_velocity: c.max_velocity,
-            })
-            .collect();
-        carpets.sort_by(|a, b| a.id.cmp(&b.id));
-
-        PlayerDto {
-            id: p.id.clone(),
-            score: p.score,
-            status: p.status.clone(),
-            position: Vec2::new(p.position.0, p.position.1),
-            velocity: Vec2::new(p.velocity.0, p.velocity.1),
-            max_acceleration: p.max_acceleration,
-            max_velocity: p.max_velocity,
-            carpets,
-        }
-    } else {
-        // Если игрок обратился к серверу впервые, регистрируем его со спавном 5 ковров флота (FE-010)
-        let config = engine.config();
-        let new_player = PlayerState::new(
-            player_id.clone(),
-            config.arena_width / 2.0,
-            config.arena_height / 2.0,
-            config.max_acceleration,
-            config.max_velocity,
-        );
-        {
-            let shared = engine.shared_state();
-            let mut state = shared.write().await;
-            state
-                .world
-                .players
-                .insert(player_id.clone(), new_player.clone());
-        }
-        engine.publish_snapshot().await;
-
-        let mut carpets: Vec<CarpetDto> = new_player
-            .carpets
-            .values()
-            .map(|c| CarpetDto {
-                id: c.id.clone(),
-                status: c.status.clone(),
-                position: Vec2::new(c.position.0, c.position.1),
-                velocity: Vec2::new(c.velocity.0, c.velocity.1),
-                max_acceleration: c.max_acceleration,
-                max_velocity: c.max_velocity,
-            })
-            .collect();
-        carpets.sort_by(|a, b| a.id.cmp(&b.id));
-
-        PlayerDto {
-            id: new_player.id,
-            score: new_player.score,
-            status: new_player.status,
-            position: Vec2::new(new_player.position.0, new_player.position.1),
-            velocity: Vec2::new(new_player.velocity.0, new_player.velocity.1),
-            max_acceleration: new_player.max_acceleration,
-            max_velocity: new_player.max_velocity,
-            carpets,
-        }
-    };
-
-    // 2. Список противников и их флотов (все остальные игроки в мире)
-    let enemies = snapshot
-        .world
-        .players
-        .values()
-        .filter(|p| p.id != player_id)
-        .map(|p| {
-            let mut carpets: Vec<EnemyCarpetDto> = p
-                .carpets
-                .values()
-                .map(|c| EnemyCarpetDto {
-                    id: c.id.clone(),
-                    position: Vec2::new(c.position.0, c.position.1),
-                    velocity: Vec2::new(c.velocity.0, c.velocity.1),
-                })
-                .collect();
-            carpets.sort_by(|a, b| a.id.cmp(&b.id));
-
-            EnemyDto {
-                id: p.id.clone(),
-                position: Vec2::new(p.position.0, p.position.1),
-                velocity: Vec2::new(p.velocity.0, p.velocity.1),
-                carpets,
-            }
-        })
-        .collect();
-
-    // 3. Сокровища
-    let treasures = snapshot
-        .world
-        .treasures
-        .iter()
-        .map(Treasure::from)
-        .collect();
-
-    // 4. Аномалии (FE-007: передача параметров динамических аномалий)
-    let anomalies = snapshot
-        .world
-        .anomalies
-        .iter()
-        .map(AnomalyDto::from)
-        .collect();
-
-    // 5. Статус сессии в виде строки ("active", "paused", "finished")
-    let game_status = match snapshot.game_status {
-        SessionStatus::Active => "active",
-        SessionStatus::Paused => "paused",
-        SessionStatus::Finished => "finished",
+async fn ensure_player(engine: &GameEngine, player_id: &str) {
+    if engine.get_snapshot().world.players.contains_key(player_id) {
+        return;
     }
-    .to_string();
-
-    Ok(Json(GameStateResponseDto {
-        tick: snapshot.tick,
-        game_status,
-        player,
-        treasures,
-        anomalies,
-        enemies,
-    }))
+    let config = engine.config();
+    let player = PlayerState::new(
+        player_id.to_string(),
+        0.0,
+        0.0,
+        config.max_acceleration,
+        config.max_velocity,
+    );
+    let shared = engine.shared_state();
+    let mut state = shared.write().await;
+    if state.world.players.contains_key(player_id) {
+        return;
+    }
+    let carpet_ids: Vec<_> = player.carpets.keys().cloned().collect();
+    state.world.players.insert(player_id.to_string(), player);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(1);
+    let mut rng = SimpleRng::new(seed);
+    for carpet_id in carpet_ids {
+        let (x, y) = WorldSpatialEngine::find_safe_spawn_point(
+            &state.world,
+            config.arena_width,
+            config.arena_height,
+            config.transport_radius,
+            &mut rng,
+        );
+        if let Some(carpet) = state
+            .world
+            .players
+            .get_mut(player_id)
+            .and_then(|player| player.carpets.get_mut(&carpet_id))
+        {
+            carpet.position = (x, y);
+        }
+    }
+    if let Some(player) = state.world.players.get_mut(player_id) {
+        player.sync_from_carpets();
+    }
+    drop(state);
+    engine.publish_snapshot().await;
 }
 
-/// Обработчик POST /api/carpet/command и POST /api/carpet/commands (FE-004 / FE-010)
-pub async fn post_command(
+fn legacy_status(status: &str) -> String {
+    if status == "destroyed" {
+        "dead".to_string()
+    } else {
+        "alive".to_string()
+    }
+}
+
+fn legacy_transport(carpet: &CarpetState, snapshot: &WorldSnapshot) -> LegacyTransportDto {
+    let position = Vec2::new(carpet.position.0, carpet.position.1);
+    LegacyTransportDto {
+        anomaly_acceleration: crate::spatial::compute_environmental_forces_from_states(
+            position,
+            &snapshot.world.anomalies,
+        ),
+        attack_cooldown_ms: 0,
+        death_count: carpet.death_count,
+        health: if carpet.is_destroyed() { 0 } else { 100 },
+        id: carpet.id.clone(),
+        self_acceleration: Vec2::new(carpet.acceleration.0, carpet.acceleration.1),
+        shield_cooldown_ms: 0,
+        shield_left_ms: 0,
+        status: legacy_status(&carpet.status),
+        velocity: Vec2::new(carpet.velocity.0, carpet.velocity.1),
+        x: carpet.position.0,
+        y: carpet.position.1,
+    }
+}
+
+fn legacy_desert(
+    snapshot: &WorldSnapshot,
+    player_id: &str,
+    engine: &GameEngine,
+    errors: Vec<String>,
+) -> LegacyDesertDto {
+    let config = engine.config();
+    let player = snapshot
+        .world
+        .players
+        .get(player_id)
+        .expect("registered player");
+    let mut transports: Vec<_> = player
+        .carpets
+        .values()
+        .map(|carpet| legacy_transport(carpet, snapshot))
+        .collect();
+    transports.sort_by(|a, b| a.id.cmp(&b.id));
+    LegacyDesertDto {
+        errors,
+        anomalies: snapshot
+            .world
+            .anomalies
+            .iter()
+            .map(|a| LegacyAnomalyDto {
+                effective_radius: a.radius,
+                id: a.id.clone(),
+                radius: a.core_radius,
+                strength: if a.anomaly_type == "repelling" {
+                    -a.force
+                } else {
+                    a.force
+                },
+                velocity: Vec2::new(a.velocity.0, a.velocity.1),
+                x: a.position.0,
+                y: a.position.1,
+            })
+            .collect(),
+        attack_cooldown_ms: config.attack_cooldown_ms,
+        attack_damage: config.attack_damage,
+        attack_explosion_radius: config.attack_explosion_radius,
+        attack_range: config.attack_range,
+        bounties: snapshot
+            .world
+            .treasures
+            .iter()
+            .filter(|t| !t.is_collected)
+            .map(|t| LegacyBountyDto {
+                points: t.value,
+                radius: config.transport_radius,
+                x: t.position.0,
+                y: t.position.1,
+            })
+            .collect(),
+        enemies: {
+            let mut enemy_carpets: Vec<_> = snapshot
+                .world
+                .players
+                .iter()
+                .filter(|(other_player_id, _)| other_player_id.as_str() != player_id)
+                .flat_map(|(other_player_id, other_player)| {
+                    other_player.carpets.iter().map(move |(carpet_id, carpet)| {
+                        (
+                            other_player_id.clone(),
+                            carpet_id.clone(),
+                            LegacyUnitDto {
+                                health: if carpet.is_destroyed() { 0 } else { 100 },
+                                kill_bounty: 0,
+                                shield_left_ms: 0,
+                                status: legacy_status(&carpet.status),
+                                velocity: Vec2::new(carpet.velocity.0, carpet.velocity.1),
+                                x: carpet.position.0,
+                                y: carpet.position.1,
+                            },
+                        )
+                    })
+                })
+                .collect();
+            enemy_carpets.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+            enemy_carpets
+                .into_iter()
+                .map(|(_, _, enemy)| enemy)
+                .collect()
+        },
+        map_size: Vec2::new(config.arena_width, config.arena_height),
+        max_accel: config.max_acceleration,
+        max_speed: config.max_velocity,
+        name: player.id.clone(),
+        points: player.score,
+        revive_timeout_sec: config.revive_timeout_sec,
+        shield_cooldown_ms: config.shield_cooldown_ms,
+        shield_time_ms: config.shield_time_ms,
+        transport_radius: config.transport_radius,
+        transports,
+        wanted_list: Vec::new(),
+    }
+}
+
+pub async fn post_legacy_move(
     Extension(token): Extension<AuthToken>,
     State(engine): State<GameEngine>,
     body: Bytes,
-) -> Result<Json<CommandResponseDto>, ApiError> {
-    let val: serde_json::Value =
+) -> Result<Json<LegacyDesertDto>, ApiError> {
+    let request: LegacyMoveRequestDto =
         serde_json::from_slice(&body).map_err(|_| ApiError::InvalidVector)?;
-
-    // 1. Проверяем пакетный формат: {"commands": [{"carpet_id": "...", "acceleration": {...}}, ...]}
-    if let Some(commands_val) = val.get("commands").and_then(|v| v.as_array()) {
-        if commands_val.is_empty() {
-            return Err(ApiError::InvalidVector);
+    let player_id = token.0;
+    ensure_player(&engine, &player_id).await;
+    let snapshot = engine.get_snapshot();
+    let player = snapshot
+        .world
+        .players
+        .get(&player_id)
+        .expect("registered player");
+    let mut commands = Vec::new();
+    let mut errors = Vec::new();
+    for transport in request.transports {
+        let Some(acceleration) = transport.acceleration else {
+            continue;
+        };
+        if !acceleration.is_finite() {
+            errors.push(format!(
+                "transport {} acceleration is invalid",
+                transport.id
+            ));
+        } else if !player.carpets.contains_key(&transport.id) {
+            errors.push(format!(
+                "transport {} does not belong to player",
+                transport.id
+            ));
+        } else {
+            commands.push((
+                transport.id,
+                PlayerCommand::new(acceleration.x, acceleration.y),
+            ));
         }
-
-        let mut batch_commands = Vec::with_capacity(commands_val.len());
-        for item in commands_val {
-            let carpet_id = item
-                .get("carpet_id")
-                .and_then(|v| v.as_str())
-                .ok_or(ApiError::InvalidVector)?
-                .to_string();
-
-            let accel = item.get("acceleration").ok_or(ApiError::InvalidVector)?;
-            let x = accel
-                .get("x")
-                .and_then(|v| v.as_f64())
-                .ok_or(ApiError::InvalidVector)?;
-            let y = accel
-                .get("y")
-                .and_then(|v| v.as_f64())
-                .ok_or(ApiError::InvalidVector)?;
-
-            if !x.is_finite() || !y.is_finite() {
-                return Err(ApiError::InvalidVector);
-            }
-
-            batch_commands.push((carpet_id, PlayerCommand::new(x, y)));
-        }
-
-        match engine.register_batch_commands(token.0, batch_commands) {
-            Ok(count) => Ok(Json(CommandResponseDto {
-                status: "accepted",
-                commands_count: Some(count),
-            })),
-            Err(CommandError::AlreadySubmitted) => Err(ApiError::RateLimitExceeded),
-            Err(CommandError::InvalidCommand(_)) => Err(ApiError::InvalidVector),
-            Err(CommandError::SessionNotActive) => Err(ApiError::SessionNotActive),
-            Err(CommandError::PlayerDestroyed) => Err(ApiError::PlayerDestroyed),
-        }
-    } else if let Some(accel) = val.get("acceleration") {
-        // 2. Одиночный формат (обратная совместимость): {"acceleration": {"x": ..., "y": ...}}
-        let x = accel
-            .get("x")
-            .and_then(|v| v.as_f64())
-            .ok_or(ApiError::InvalidVector)?;
-        let y = accel
-            .get("y")
-            .and_then(|v| v.as_f64())
-            .ok_or(ApiError::InvalidVector)?;
-
-        if !x.is_finite() || !y.is_finite() {
-            return Err(ApiError::InvalidVector);
-        }
-
-        let command = PlayerCommand::new(x, y);
-
-        match engine.register_command(token.0, command) {
-            Ok(()) => Ok(Json(CommandResponseDto::default())),
-            Err(CommandError::AlreadySubmitted) => Err(ApiError::RateLimitExceeded),
-            Err(CommandError::InvalidCommand(_)) => Err(ApiError::InvalidVector),
-            Err(CommandError::SessionNotActive) => Err(ApiError::SessionNotActive),
-            Err(CommandError::PlayerDestroyed) => Err(ApiError::PlayerDestroyed),
-        }
-    } else {
-        Err(ApiError::InvalidVector)
     }
+    drop(snapshot);
+    if !commands.is_empty() {
+        match engine.register_batch_commands(player_id.clone(), commands) {
+            Ok(_) => {}
+            Err(CommandError::AlreadySubmitted) => return Err(ApiError::RateLimitExceeded),
+            Err(CommandError::InvalidCommand(message)) => errors.push(message),
+            Err(CommandError::SessionNotActive) => return Err(ApiError::SessionNotActive),
+            Err(CommandError::PlayerDestroyed) => return Err(ApiError::PlayerDestroyed),
+        }
+    }
+    Ok(Json(legacy_desert(
+        &engine.get_snapshot(),
+        &player_id,
+        &engine,
+        errors,
+    )))
 }

@@ -6,18 +6,12 @@
 
 use super::vector2d::Vec2;
 
-/// Вычисляет эффективное управляющее ускорение с учетом статуса оглушения (`is_stunned`)
-/// и предельного ограничения ускорения `max_accel`.
+/// Ограничивает управляющее ускорение до `max_accel`.
 ///
-/// Если игрок оглушен (`is_stunned == true`), ускорение принудительно обнуляется.
-/// Иначе, если длина вектора команды превышает `max_accel`, вектор усекается с сохранением направления.
+/// Силы окружения рассчитываются отдельно и не могут отключить команду.
 #[inline]
-pub fn compute_effective_accel(command_accel: Vec2, max_accel: f64, is_stunned: bool) -> Vec2 {
-    if is_stunned {
-        Vec2::ZERO
-    } else {
-        command_accel.clamp_length(max_accel)
-    }
+pub fn compute_effective_accel(command_accel: Vec2, max_accel: f64) -> Vec2 {
+    command_accel.clamp_length(max_accel)
 }
 
 /// Применяет коэффициент вязкого трения среды `k_f` к вектору скорости.
@@ -50,22 +44,22 @@ mod tests {
     #[test]
     fn test_compute_effective_accel_normal() {
         let cmd = Vec2::new(3.0, 4.0); // длина 5.0
-        let effective = compute_effective_accel(cmd, 10.0, false);
+        let effective = compute_effective_accel(cmd, 10.0);
         assert_eq!(effective, cmd);
     }
 
     #[test]
     fn test_compute_effective_accel_clamping() {
         let cmd = Vec2::new(10.0, 0.0);
-        let effective = compute_effective_accel(cmd, 5.0, false);
+        let effective = compute_effective_accel(cmd, 5.0);
         assert_eq!(effective, Vec2::new(5.0, 0.0));
     }
 
     #[test]
-    fn test_compute_effective_accel_stunned_zeroes() {
-        let cmd = Vec2::new(5.0, 5.0);
-        let effective = compute_effective_accel(cmd, 10.0, true);
-        assert_eq!(effective, Vec2::ZERO);
+    fn test_anomaly_force_does_not_disable_command_accel() {
+        let cmd = Vec2::new(24.0, 32.0);
+        let effective = compute_effective_accel(cmd, 40.0);
+        assert_eq!(effective, cmd);
     }
 
     #[test]

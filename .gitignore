@@ -2,6 +2,8 @@
 target/
 **/*.rs.bk
 *.pdb
+players/player_2/manual_control*.json
+players/player_2/manual_control*.json.*.tmp
 
 # Python virtual environment and cache
 __pycache__/

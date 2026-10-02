@@ -4,9 +4,9 @@ title: "Подсистема управления пространственны
 module: "server::spatial"
 author: "AI Agent & Game Logic Engineer"
 created_at: "2026-09-30"
-updated_at: "2026-09-30"
+updated_at: "2026-10-02"
 status: "approved"
-version: 1.0
+version: 1.2
 tags:
   - rust
   - collisions
@@ -42,7 +42,7 @@ classDiagram
     class SpatialCollisionManager {
         <<trait>>
         +compute_environmental_forces(player_pos) Vec2
-        +resolve_treasure_captures(player_pos, capture_radius) u32
+        +resolve_treasure_captures(previous_pos, current_pos, capture_radius) u32
         +check_and_update_stuns(player_pos) bool
     }
     class EntityManager {
@@ -107,8 +107,10 @@ pub struct PlayerEntity {
 4. Результирующий вектор: $\vec{W} = \sum \vec{w}_i$.
 
 ### 4.2. Сбор сокровищ
-1. Проверка условия: $(\vec{P}_{player} - \vec{P}_{treasure}).\text{length\_squared}() \le R_{capture}^2$.
-2. При срабатывании:
+1. Для каждого живого ковра получить предыдущую и текущую позиции за физический тик.
+2. Вычислить минимальное расстояние от центра монеты до отрезка между позициями ковра; собрать монету, если $d_{segment} \le (R_{player}+R_{coin})$.
+3. Если несколько ковров коснулись одной монеты за тик, награду получает ковер с минимальным расстоянием от траектории до центра монеты.
+4. При срабатывании:
    - `player.score += treasure.value`;
    - Сокровище удаляется из активного пула карты.
 
@@ -138,8 +140,9 @@ pub struct PlayerEntity {
 ### Unit-тесты
 - `test_anomaly_pull_direction`: вектор силы направлен строго к центру вихря.
 - `test_anomaly_zero_force_outside_radius`: вне зоны $R_{anomaly}$ сила равна $(0, 0)$.
-- `test_treasure_collected_within_radius`: при $d \le R_{capture}$ сокровище собирается и начисляются очки.
-- `test_treasure_not_collected_outside_radius`: при $d > R_{capture}$ счет не меняется.
+- `test_treasure_collected_within_radius`: касание круга монеты эффективным радиусом ковра начисляет очки.
+- `test_treasure_swept_collision_between_tick_endpoints`: пересечение радиусов между концами тика собирает сокровище.
+- `test_treasure_not_collected_outside_radius`: если отрезок движения остаётся снаружи суммы радиусов, счет не меняется.
 
 ---
 
@@ -149,3 +152,4 @@ pub struct PlayerEntity {
 | :--- | :--- | :--- | :--- |
 | 1.0 | 2026-09-30 | AI Agent | Создание спецификации пространственных сущностей и коллизий |
 | 1.1 | 2026-09-30 | AI Agent | Реализация EntityManager, WorldSpatialEngine, коллизий и интеграции с физикой |
+| 1.2 | 2026-10-02 | Codex | Сбор монеты специфицирован по касанию суммы радиусов на отрезке движения за тик. |

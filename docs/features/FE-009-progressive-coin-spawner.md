@@ -4,9 +4,9 @@ title: "Динамический генератор монет с прогрес
 module: "Пространственные сущности и экономика (Spatial & Coin Economy)"
 author: "AI Agent & Tech Lead"
 created_at: "2026-09-30"
-updated_at: "2026-09-30"
+updated_at: "2026-10-02"
 status: "approved"
-version: 1.0
+version: 1.3
 tags:
   - coins
   - treasure-spawner
@@ -26,9 +26,9 @@ related_test_cases:
 
 ## 1. Контекст и бизнес-цель
 
-В соответствии с [`DR-008`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-008-treasure.md) на карте должна поддерживаться постоянная квота нематериальных монет ($N_{max\_coins} \approx 10..15$). При этом ценность монет не статична: чем больше времени (тиков) прошло с начала матча, тем выше возможный максимальный номинал появляющихся сокровищ.
+В соответствии с [`DR-008`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-008-treasure.md) на карте поддерживается настраиваемая постоянная квота нематериальных монет; текущая конфигурация мира задает $N_{max\_coins}=1000$. Координаты остаются случайными внутри безопасного отступа, но область для нового спавна выбирается с учетом плотности оставшихся монет. Ценность монет прогрессивно растет с течением игровых тиков.
 
-Цель данной фичи — реализовать модуль `CoinSpawner`, обеспечивающий автоматическое восполнение монет в пределах арены со случайными координатами и расчет прогрессивного номинала $V(T)$ по формуле временного масштабирования.
+Цель данной фичи — реализовать модуль `CoinSpawner`, обеспечивающий автоматическое восполнение монет с пространственной обратной связью: новые монеты направляются в наименее заполненные области, компенсируя постепенную очистку популярных маршрутов. Номинал по-прежнему рассчитывается по формуле временного масштабирования $V(T)$.
 
 ---
 
@@ -40,9 +40,10 @@ related_test_cases:
 flowchart TD
     Tick["Игровой тик T (Simulation Step)"] --> Resolve["WorldSpatialEngine::resolve(world, dt)"]
     Resolve --> CheckQuota{"Активных монет < N_max?"}
-    CheckQuota -- Да --> Spawner["CoinSpawner::replenish(current_count, current_tick)"]
-    CheckQuota -- Нет --> Captures["Проверка сбора коврами (dist <= R_capture)"]
-    Spawner --> Formula["Расчет номинала V(T) = V_base + alpha*T^gamma + Rand"]
+    CheckQuota -- Да --> Spawner["CoinSpawner::replenish_balanced(live_positions, current_tick)"]
+    CheckQuota -- Нет --> Captures["Проверка касания кругов на отрезке тика"]
+    Spawner --> Region["Случайная наименее заполненная область арены"]
+    Region --> Formula["Расчет номинала V(T) = V_base + alpha*T^gamma + Rand"]
     Formula --> AddWorld["Добавление новых монет в world.treasures"]
     AddWorld --> Captures
     Captures --> Score["player.score += coin.value & удаление монеты"]
@@ -83,7 +84,7 @@ pub struct CoinSpawnerConfig {
 impl Default for CoinSpawnerConfig {
     fn default() -> Self {
         Self {
-            max_coins: 10,
+            max_coins: 1000,
             base_value: 25,
             arena_width: 1000.0,
             arena_height: 1000.0,
@@ -104,8 +105,8 @@ pub struct CoinSpawner {
 ## 4. План реализации
 
 1. **Создание модуля `server/src/spatial/coin_spawner.rs`**:
-   - Реализация структуры `CoinSpawner` с методами `new`, `spawn_one(tick)` и `replenish_if_needed(current_len, tick)`.
-   - Генерация случайных координат в диапазоне $[margin, W - margin] \times [margin, H - margin]$.
+   - Реализация структуры `CoinSpawner` с методами `new`, `spawn_one(tick)` и `replenish_balanced_avoiding_anomalies(live_positions, tick, anomalies)`.
+   - Генерация координат внутри случайно выбранной наименее заполненной равноплощадной области, в пределах безопасного отступа.
    - Формула расчета номинала с зависимостью от $T$.
 2. **Интеграция в `WorldSpatialEngine`**:
    - Добавление `coin_spawner: Option<CoinSpawner>` в `WorldSpatialEngine`.
@@ -120,3 +121,12 @@ pub struct CoinSpawner {
 - `TC-COIN-01`: Проверка поддержания постоянной квоты: при удалении монет генератор восполняет их ровно до $N_{max\_coins}$.
 - `TC-COIN-02`: Проверка временной прогрессии: математическое ожидание номинала на тике $T=2000$ строго превышает номинал на тике $T=10$.
 - `TC-COIN-03`: Проверка диапазона координат: все сгенерированные монеты находятся строго внутри арены с отступом $margin$.
+- `TC-COIN-04`: При восполнении монетами область с меньшим числом активных монет выбирается раньше более заполненной; при равной заполненности возможен случайный выбор.
+- `TC-COIN-05`: После многократного сбора в одной области и восполнения распределение постепенно выравнивается, а общее число монет не превышает квоту.
+
+## История изменений
+
+| Версия | Дата | Автор | Изменение |
+|---|---|---|---|
+| 1.1 | 2026-10-02 | Codex | Квота по умолчанию снижена до 1000 активных монет. |
+| 1.3 | 2026-10-02 | Codex | Восполнение учитывает фактическое распределение и направляет монеты в наименее заполненные области арены. |

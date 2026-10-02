@@ -41,6 +41,103 @@ pub struct BatchCarpetCommandRequestDto {
     pub commands: Vec<CarpetCommandItemDto>,
 }
 
+/// Канонический запрос внешнего API `POST /play/magcarp/player/move`.
+///
+/// Имена полей намеренно совпадают с `datsmagic/src/api/move.ts`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct LegacyMoveRequestDto {
+    pub transports: Vec<LegacyTransportCommandDto>,
+}
+
+/// Команда отдельного транспорта внешнего API.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTransportCommandDto {
+    pub id: String,
+    pub acceleration: Option<Vector2DDto>,
+    pub activate_shield: Option<bool>,
+    pub attack: Option<serde_json::Value>,
+}
+
+/// Точный ответ `Desert` референсного клиента в `./datsmagic`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDesertDto {
+    pub errors: Vec<String>,
+    pub anomalies: Vec<LegacyAnomalyDto>,
+    pub attack_cooldown_ms: u64,
+    pub attack_damage: u32,
+    pub attack_explosion_radius: f64,
+    pub attack_range: f64,
+    pub bounties: Vec<LegacyBountyDto>,
+    pub enemies: Vec<LegacyUnitDto>,
+    pub map_size: Vector2DDto,
+    pub max_accel: f64,
+    pub max_speed: f64,
+    pub name: String,
+    pub points: u32,
+    pub revive_timeout_sec: u64,
+    pub shield_cooldown_ms: u64,
+    pub shield_time_ms: u64,
+    pub transport_radius: f64,
+    pub transports: Vec<LegacyTransportDto>,
+    pub wanted_list: Vec<LegacyUnitDto>,
+}
+
+/// Аномалия в форме, заданной внешним контрактом.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyAnomalyDto {
+    pub effective_radius: f64,
+    pub id: String,
+    pub radius: f64,
+    pub strength: f64,
+    pub velocity: Vector2DDto,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Монета (`Bounty`) в форме внешнего контракта.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LegacyBountyDto {
+    pub points: u32,
+    pub radius: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Видимый противник или цель розыска внешнего API.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyUnitDto {
+    pub health: u32,
+    pub kill_bounty: u32,
+    pub shield_left_ms: u64,
+    pub status: String,
+    pub velocity: Vector2DDto,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Собственный транспорт внешнего API с тремя векторами телеметрии.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTransportDto {
+    pub anomaly_acceleration: Vector2DDto,
+    pub attack_cooldown_ms: u64,
+    /// Суммарное число гибелей этого ковра за все респавны его стабильного ID.
+    pub death_count: u32,
+    pub health: u32,
+    pub id: String,
+    pub self_acceleration: Vector2DDto,
+    pub shield_cooldown_ms: u64,
+    pub shield_left_ms: u64,
+    pub status: String,
+    pub velocity: Vector2DDto,
+    pub x: f64,
+    pub y: f64,
+}
+
 /// Подтверждение приема команды (200 OK)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommandResponseDto {
@@ -209,6 +306,8 @@ pub struct CarpetDto {
     pub position: Vector2DDto,
     /// Текущий вектор скорости
     pub velocity: Vector2DDto,
+    /// Эффективный вектор управляющего ускорения
+    pub acceleration: Vector2DDto,
     /// Максимальный модуль вектора ускорения
     pub max_acceleration: f64,
     /// Максимальный модуль вектора скорости
@@ -224,6 +323,8 @@ pub struct EnemyCarpetDto {
     pub position: Vector2DDto,
     /// Текущий вектор скорости
     pub velocity: Vector2DDto,
+    /// Эффективный вектор управляющего ускорения
+    pub acceleration: Vector2DDto,
 }
 
 /// Состояние игрока и его флота из 5 ковров (FE-007 / FE-010)
@@ -239,6 +340,8 @@ pub struct PlayerDto {
     pub position: Vector2DDto,
     /// Текущий вектор скорости (первичного ковра флота)
     pub velocity: Vector2DDto,
+    /// Эффективный вектор управляющего ускорения первичного ковра
+    pub acceleration: Vector2DDto,
     /// Максимальный модуль вектора ускорения
     pub max_acceleration: f64,
     /// Максимальный модуль вектора скорости
@@ -271,6 +374,8 @@ pub struct EnemyDto {
     pub position: Vector2DDto,
     /// Текущий вектор скорости
     pub velocity: Vector2DDto,
+    /// Эффективный вектор управляющего ускорения
+    pub acceleration: Vector2DDto,
     /// Флот ковров противника (FE-010)
     #[serde(default)]
     pub carpets: Vec<EnemyCarpetDto>,
@@ -307,6 +412,7 @@ mod tests {
                 status: "normal".to_string(),
                 position: Vec2::new(412.5, 890.2),
                 velocity: Vec2::new(8.5, -4.1),
+                acceleration: Vec2::new(1.0, 0.0),
                 max_acceleration: 5.0,
                 max_velocity: 20.0,
                 carpets: vec![CarpetDto {
@@ -314,6 +420,7 @@ mod tests {
                     status: "normal".to_string(),
                     position: Vec2::new(412.5, 890.2),
                     velocity: Vec2::new(8.5, -4.1),
+                    acceleration: Vec2::new(1.0, 0.0),
                     max_acceleration: 5.0,
                     max_velocity: 20.0,
                 }],
@@ -332,10 +439,12 @@ mod tests {
                 id: "team_5".to_string(),
                 position: Vec2::new(430.0, 910.0),
                 velocity: Vec2::new(12.0, 2.1),
+                acceleration: Vec2::ZERO,
                 carpets: vec![EnemyCarpetDto {
                     id: "team_5_0".to_string(),
                     position: Vec2::new(430.0, 910.0),
                     velocity: Vec2::new(12.0, 2.1),
+                    acceleration: Vec2::ZERO,
                 }],
             }],
         };
@@ -431,6 +540,7 @@ mod tests {
             status: "destroyed".to_string(),
             position: Vector2DDto::new(340.5, 720.0),
             velocity: Vector2DDto::ZERO,
+            acceleration: Vector2DDto::ZERO,
             max_acceleration: 5.0,
             max_velocity: 20.0,
             carpets: vec![],

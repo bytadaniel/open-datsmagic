@@ -21,7 +21,9 @@ pub use collision_detector::{
     check_circle_collision, check_player_collision, check_point_in_circle, clamp_position_to_arena,
     is_within_arena,
 };
-pub use entities::{Anomaly, AnomalyType, CarpetEntity, DynamicAnomaly, EnemyPlayer, PlayerEntity, Treasure};
+pub use entities::{
+    Anomaly, AnomalyType, CarpetEntity, DynamicAnomaly, EnemyPlayer, PlayerEntity, Treasure,
+};
 pub use manager::{
     compute_anomaly_force, compute_environmental_forces_from_anomalies,
     compute_environmental_forces_from_states, compute_single_anomaly_force, EntityManager,

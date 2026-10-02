@@ -27,7 +27,6 @@ fn test_friction_decay() {
     let max_velocity = 20.0;
     let friction = 0.98;
     let dt = 0.2;
-    let is_stunned = false;
 
     let (new_pos, new_vel) = integrator.step(
         initial_pos,
@@ -38,7 +37,6 @@ fn test_friction_decay() {
         max_velocity,
         friction,
         dt,
-        is_stunned,
     );
 
     // Новая скорость: V_new = V_old * 0.98 = (9.8, 0.0)
@@ -74,17 +72,8 @@ fn test_friction_decay_multi_step() {
     let dt = 0.2;
 
     for step in 1..=10 {
-        let (next_pos, next_vel) = integrator.step(
-            pos,
-            vel,
-            Vec2::ZERO,
-            Vec2::ZERO,
-            5.0,
-            20.0,
-            friction,
-            dt,
-            false,
-        );
+        let (next_pos, next_vel) =
+            integrator.step(pos, vel, Vec2::ZERO, Vec2::ZERO, 5.0, 20.0, friction, dt);
         let expected_speed = 10.0 * friction.powi(step);
         assert!(
             (next_vel.x - expected_speed).abs() < 1e-7,
@@ -121,7 +110,6 @@ fn test_acceleration_clamping() {
         max_velocity,
         friction,
         dt,
-        false,
     );
 
     // Применяемое ускорение равно (5.0, 0.0). Скорость V = 5.0 * 0.2 = 1.0
@@ -153,7 +141,6 @@ fn test_diagonal_acceleration_clamping() {
         50.0,
         1.0,
         dt,
-        false,
     );
 
     // Должен масштабироваться вдвое: (3.0, 4.0) с длиной ровно 5.0
@@ -185,7 +172,6 @@ fn test_velocity_clamping() {
             max_velocity,
             friction,
             dt,
-            false,
         );
         assert!(
             next_vel.length() <= max_velocity + 1e-9,
@@ -201,15 +187,14 @@ fn test_velocity_clamping() {
     assert!((vel.length() - max_velocity).abs() < 1e-7);
 }
 
-/// TC-PHY-03: Поведение при оглушении игрока (test_stunned_zeroes_accel)
-/// Спецификация: "при is_stunned == true переданный вектор ускорения игнорируется"
+/// TC-PHY-03: Сильная внешняя сила не отключает командное ускорение.
 #[test]
-fn test_stunned_zeroes_accel() {
+fn test_anomaly_force_does_not_disable_command_accel() {
     let integrator = EulerIntegrator;
     let initial_pos = Vec2::ZERO;
-    let initial_vel = Vec2::new(10.0, 5.0);
-    let command_accel = Vec2::new(5.0, 5.0);
-    let env_forces = Vec2::ZERO;
+    let initial_vel = Vec2::new(10.0, 0.0);
+    let command_accel = Vec2::new(5.0, 0.0);
+    let env_forces = Vec2::new(-2.0, 0.0);
     let max_accel = 5.0;
     let max_velocity = 20.0;
     let friction = 0.98;
@@ -224,18 +209,16 @@ fn test_stunned_zeroes_accel() {
         max_velocity,
         friction,
         dt,
-        true, // оглушен
     );
 
-    // Команда должна быть полностью проигнорирована
-    let expected_vel = initial_vel * friction;
-    assert!((new_vel.x - expected_vel.x).abs() < 1e-9);
-    assert!((new_vel.y - expected_vel.y).abs() < 1e-9);
+    // V = (10 * .98) + (5 - 2) * .2 = 10.4.
+    assert!((new_vel.x - 10.4).abs() < 1e-9);
+    assert!((new_vel.y - 0.0).abs() < 1e-9);
 }
 
-/// TC-PHY-03: Воздействие сил окружения даже в состоянии оглушения
+/// TC-PHY-03: Команда и сила окружения складываются в полном объеме.
 #[test]
-fn test_stunned_environment_forces_applied() {
+fn test_command_and_environment_forces_are_both_applied() {
     let integrator = EulerIntegrator;
     let initial_pos = Vec2::ZERO;
     let initial_vel = Vec2::ZERO;
@@ -252,11 +235,10 @@ fn test_stunned_environment_forces_applied() {
         20.0,
         1.0,
         dt,
-        true, // оглушен
     );
 
-    // Тяга игрока (5.0, 0.0) обнуляется, но сила вихря (0.0, 3.0) действует
-    assert!((new_vel.x - 0.0).abs() < 1e-9);
+    // Тяга (5, 0) и вихрь (0, 3) приложены одновременно.
+    assert!((new_vel.x - 5.0).abs() < 1e-9);
     assert!((new_vel.y - 3.0).abs() < 1e-9);
 }
 
@@ -275,7 +257,6 @@ fn test_error_handling_robustness() {
         f64::INFINITY,
         f64::NAN,
         f64::NAN,
-        false,
     );
 
     assert!(pos.is_finite());
@@ -310,6 +291,7 @@ async fn test_game_engine_physics_integration() {
             status: "normal".to_string(),
             position: (0.0, 0.0),
             velocity: (10.0, 0.0),
+            acceleration: (0.0, 0.0),
             max_acceleration: 5.0,
             max_velocity: 20.0,
             stun_remaining_ticks: 0,
@@ -333,6 +315,7 @@ async fn test_game_engine_physics_integration() {
     // V_new = (10.0 * 0.98) + (5.0 * 0.2) = 9.8 + 1.0 = 10.8
     assert!((player.velocity.0 - 10.8).abs() < 1e-7);
     assert!((player.velocity.1 - 0.0).abs() < 1e-7);
+    assert_eq!(player.acceleration, (5.0, 0.0));
 
     // P_new = 0.0 + 10.8 * 0.2 = 2.16
     assert!((player.position.0 - 2.16).abs() < 1e-7);
@@ -342,11 +325,11 @@ async fn test_game_engine_physics_integration() {
 /// Тестирование вспомогательных функций сил и трения (forces.rs)
 #[test]
 fn test_forces_helpers() {
-    let accel = compute_effective_accel(Vec2::new(10.0, 0.0), 4.0, false);
+    let accel = compute_effective_accel(Vec2::new(10.0, 0.0), 4.0);
     assert_eq!(accel, Vec2::new(4.0, 0.0));
 
-    let stunned_accel = compute_effective_accel(Vec2::new(10.0, 0.0), 4.0, true);
-    assert_eq!(stunned_accel, Vec2::ZERO);
+    let env_accel = compute_effective_accel(Vec2::new(10.0, 0.0), 4.0);
+    assert_eq!(env_accel, Vec2::new(4.0, 0.0));
 
     let decayed_vel = apply_friction(Vec2::new(10.0, 20.0), 0.5);
     assert_eq!(decayed_vel, Vec2::new(5.0, 10.0));
@@ -377,4 +360,32 @@ fn test_world_physics_engine_direct_step() {
     let updated = world.players.get("p1").unwrap();
     assert!((updated.velocity.0 - 9.8).abs() < 1e-9);
     assert!((updated.position.0 - 9.8 * 0.2).abs() < 1e-9);
+}
+
+/// Missing a single network packet must not turn a previously applied carpet command into zero.
+#[test]
+fn test_carpet_holds_last_acceleration_when_tick_has_no_new_command() {
+    use server::engine::{PhysicsStepHandler, WorldData};
+    use std::collections::HashMap;
+
+    let mut engine = WorldPhysicsEngine::new(0.98);
+    let mut world = WorldData::new();
+    let mut player = PlayerState::new("p2".to_string(), 100.0, 100.0, 5.0, 20.0);
+    player.carpets.get_mut("p2_0").unwrap().velocity = (0.0, 0.0);
+    world.players.insert(player.id.clone(), player);
+
+    let mut commands = HashMap::new();
+    commands.insert("p2_0".to_string(), PlayerCommand::new(5.0, 0.0));
+    engine.step(&mut world, &commands, 0.2);
+
+    let carpet = world.players["p2"].carpets.get("p2_0").unwrap();
+    assert_eq!(carpet.acceleration, (5.0, 0.0));
+    assert!((carpet.velocity.0 - 1.0).abs() < 1e-9);
+
+    commands.clear();
+    engine.step(&mut world, &commands, 0.2);
+
+    let carpet = world.players["p2"].carpets.get("p2_0").unwrap();
+    assert_eq!(carpet.acceleration, (5.0, 0.0));
+    assert!((carpet.velocity.0 - 1.98).abs() < 1e-9);
 }

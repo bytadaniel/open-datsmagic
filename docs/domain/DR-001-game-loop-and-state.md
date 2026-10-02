@@ -15,7 +15,7 @@ tags:
 related_domains:
   - DR-002
   - DR-003
-  - DR-004
+  - visualizer_2/docs/domain/DR-001-observation-and-visualization.md
   - DR-005
 ---
 
@@ -152,7 +152,7 @@ stateDiagram-v2
 ## 10. Зависимости
 
 - **Внутренние модули:** Векторная физика ([`DR-002`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-002-vector-physics.md)), Коллизии и сущности ([`DR-003`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-003-entity-interactions-and-collisions.md)).
-- **Потребители:** Клиент визуализации ([`DR-004`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-004-simulation-visualization.md)).
+- **Потребители:** Клиент визуализации ([`visualizer_2` DR-001](../../visualizer_2/docs/domain/DR-001-observation-and-visualization.md)).
 
 ---
 

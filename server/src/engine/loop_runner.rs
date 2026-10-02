@@ -25,6 +25,9 @@ pub trait PhysicsStepHandler: Send + Sync {
 
 /// Трейт для обработчика пространственных сущностей и коллизий (абстракция для модуля FE-003)
 pub trait SpatialStepHandler: Send + Sync {
+    /// Сохраняет позиции до физического перемещения текущего тика.
+    fn capture_start_positions(&mut self, _world: &WorldData) {}
+
     /// Выполняет проверку коллизий, сбор сокровищ и эффекты аномалий
     fn resolve(&mut self, world: &mut WorldData, dt: f64);
 
@@ -89,13 +92,27 @@ impl GameEngine {
         let mut spatial_engine = crate::spatial::WorldSpatialEngine::default()
             .with_arena(config.arena_width, config.arena_height)
             .with_death_penalty(config.death_penalty_score)
-            .with_carpet_respawn(config.enable_respawn);
+            .with_carpet_death_loss_percent(config.carpet_death_loss_percent)
+            .with_carpet_respawn(config.enable_respawn)
+            .with_player_radius(config.transport_radius)
+            .with_capture_radius(config.transport_radius * 2.0);
 
         if config.enable_spawner {
             let spawner_config = crate::spatial::AnomalySpawnerConfig {
                 arena_width: config.arena_width,
                 arena_height: config.arena_height,
-                max_anomalies: 5,
+                max_anomalies: config.anomaly_quota,
+                speed_min: config.anomaly_speed_min,
+                speed_max: config.anomaly_speed_max,
+                core_radius_min: config.anomaly_core_radius_min,
+                core_radius_max: config.anomaly_core_radius_max,
+                effect_radius_min: config.anomaly_effect_radius_min,
+                effect_radius_max: config.anomaly_effect_radius_max,
+                force_min: config.anomaly_force_min,
+                force_max: config.anomaly_force_max,
+                force_outlier_probability: config.anomaly_force_outlier_probability,
+                force_outlier_min: config.anomaly_force_outlier_min,
+                force_outlier_max: config.anomaly_force_outlier_max,
                 ..Default::default()
             };
             let spawner = crate::spatial::AnomalySpawner::new(spawner_config);
@@ -106,7 +123,10 @@ impl GameEngine {
             let coin_spawner_config = crate::spatial::CoinSpawnerConfig {
                 arena_width: config.arena_width,
                 arena_height: config.arena_height,
-                max_coins: 10,
+                max_coins: config.bounty_quota,
+                base_value: config.bounty_base_value,
+                max_value_cap: config.bounty_max_value,
+                margin: config.bounty_spawn_margin,
                 ..Default::default()
             };
             let coin_spawner = crate::spatial::CoinSpawner::new(coin_spawner_config);
@@ -260,6 +280,10 @@ impl GameEngine {
 
         // Шаг 2: Фаза физического пересчета
         {
+            let mut spatial = self.spatial_handler.lock().await;
+            spatial.capture_start_positions(&state.world);
+        }
+        {
             let mut physics = self.physics_handler.lock().await;
             physics.step(&mut state.world, &commands, dt);
         }
@@ -277,6 +301,14 @@ impl GameEngine {
         *self.latest_snapshot.write() = snapshot;
 
         let elapsed = start_time.elapsed();
+        let remaining = tick_duration.saturating_sub(elapsed);
+        tracing::info!(
+            tick = state.tick,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            budget_ms = tick_duration.as_secs_f64() * 1000.0,
+            remaining_ms = remaining.as_secs_f64() * 1000.0,
+            "Метрики полного игрового тика"
+        );
         if elapsed > tick_duration {
             tracing::warn!(
                 "Превышена длительность тика {}: вычисление заняло {:?} при лимите {:?}",

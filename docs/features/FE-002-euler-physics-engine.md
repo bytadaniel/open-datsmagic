@@ -39,24 +39,23 @@ related_test_cases:
 1. `Vec2` — структура 2D-вектора с перегрузкой операторов (`Add`, `Sub`, `Mul`), функциями вычисления евклидовой нормы и нормализации.
 2. `EulerIntegrator` — реализация интерфейса `PhysicsIntegrator`, выполняющая шаг численного интегрирования.
 
+Перед интегрированием отсутствие новой записи команды для живого транспорта трактуется как продолжение его последнего применённого эффективного ускорения; только явно принятый нулевой вектор означает отключение тяги. На респавне ускорение очищается.
+
 ### Схема вычислительного конвейера шага физики
 
 ```mermaid
 flowchart TD
-    A["Входные данные: P_old, V_old, A_cmd, W_env, is_stunned"] --> B{"Игрок stunned?"}
-    B -- Да --> C["A = (0, 0)"]
-    B -- Нет --> D{"||A_cmd|| > A_max?"}
-    D -- Да --> E["A = (A_cmd / ||A_cmd||) * A_max"]
-    D -- Нет --> F["A = A_cmd"]
-    C --> G["V_raw = (V_old * k_f) + (A + W_env) * dt"]
-    E --> G
-    F --> G
-    G --> H{"||V_raw|| > V_max?"}
-    H -- Да --> I["V_new = (V_raw / ||V_raw||) * V_max"]
-    H -- Нет --> J["V_new = V_raw"]
-    I --> K["P_new = P_old + V_new * dt"]
-    J --> K
-    K --> L["Выход: P_new, V_new"]
+    A["Входные данные: P_old, V_old, A_cmd, W_env"] --> B{"||A_cmd|| > A_max?"}
+    B -- Да --> C["A = (A_cmd / ||A_cmd||) * A_max"]
+    B -- Нет --> D["A = A_cmd"]
+    C --> E["V_raw = (V_old * k_f) + (A + W_env) * dt"]
+    D --> E
+    E --> F{"||V_raw|| > V_max?"}
+    F -- Да --> G["V_new = (V_raw / ||V_raw||) * V_max"]
+    F -- Нет --> H["V_new = V_raw"]
+    G --> I["P_new = P_old + V_new * dt"]
+    H --> I
+    I --> J["Выход: P_new, V_new"]
 ```
 
 ---
@@ -143,7 +142,6 @@ pub trait PhysicsIntegrator: Send + Sync {
         max_velocity: f64,
         friction: f64,
         dt: f64,
-        is_stunned: bool,
     ) -> (Vec2, Vec2);
 }
 
@@ -160,14 +158,9 @@ impl PhysicsIntegrator for EulerIntegrator {
         max_velocity: f64,
         friction: f64,
         dt: f64,
-        is_stunned: bool,
     ) -> (Vec2, Vec2) {
-        // Шаг 1: Валидация ускорения
-        let effective_accel = if is_stunned {
-            Vec2::ZERO
-        } else {
-            command_accel.clamp_length(max_accel)
-        };
+        // Шаг 1: Ограничение ускорения; внешние силы не отключают команду.
+        let effective_accel = command_accel.clamp_length(max_accel);
 
         // Шаг 2 и 3: Обновление скорости с учетом трения и внешних сил
         let total_accel = effective_accel + environment_forces;
@@ -210,7 +203,7 @@ impl PhysicsIntegrator for EulerIntegrator {
 - `test_friction_decay`: при отсутствии ускорения начальная скорость $(10, 0)$ через 1 шаг становится $(10 \times 0.98, 0) = (9.8, 0)$.
 - `test_acceleration_clamping`: при заявленном векторе $(10, 0)$ с $A_{max} = 5.0$ применяется вектор $(5.0, 0)$.
 - `test_velocity_clamping`: при разгоне скорость никогда не превышает $V_{max} = 20.0$.
-- `test_stunned_zeroes_accel`: при `is_stunned == true` переданный вектор ускорения игнорируется.
+- `test_anomaly_force_does_not_disable_command`: внешняя сила не обнуляет управляющее ускорение; оба вектора отдельно участвуют в интегрировании.
 
 ---
 
@@ -220,4 +213,5 @@ impl PhysicsIntegrator for EulerIntegrator {
 | :--- | :--- | :--- | :--- |
 | 1.0 | 2026-09-30 | AI Agent | Создание спецификации физического модуля и схемы Эйлера |
 | 1.1 | 2026-09-30 | AI Agent | Реализация Vec2, EulerIntegrator, сил и интеграционных тестов |
-
+| 1.2 | 2026-10-02 | Codex | Удалена блокировка управления в зоне аномалий; команда ускорения всегда применяется с учетом maxAccel. |
+| 1.3 | 2026-10-02 | Codex | Добавлено удержание последнего принятого ускорения на тиках без свежей команды. |

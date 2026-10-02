@@ -45,6 +45,7 @@ impl PhysicsStepHandler for WorldPhysicsEngine {
         for (player_id, player) in world.players.iter_mut() {
             if player.is_destroyed() {
                 player.velocity = (0.0, 0.0);
+                player.acceleration = (0.0, 0.0);
                 for carpet in player.carpets.values_mut() {
                     carpet.mark_destroyed();
                 }
@@ -55,13 +56,14 @@ impl PhysicsStepHandler for WorldPhysicsEngine {
                 let cmd_accel = commands
                     .get(player_id)
                     .map(|cmd| Vec2::new(cmd.acceleration.0, cmd.acceleration.1))
-                    .unwrap_or(Vec2::ZERO);
+                    .unwrap_or_else(|| Vec2::new(player.acceleration.0, player.acceleration.1));
 
                 let pos = Vec2::new(player.position.0, player.position.1);
                 let vel = Vec2::new(player.velocity.0, player.velocity.1);
 
                 let env_forces =
                     crate::spatial::compute_environmental_forces_from_states(pos, &world.anomalies);
+                let effective_accel = compute_effective_accel(cmd_accel, player.max_acceleration);
 
                 let (new_pos, new_vel) = self.integrator.step(
                     pos,
@@ -72,15 +74,16 @@ impl PhysicsStepHandler for WorldPhysicsEngine {
                     player.max_velocity,
                     self.friction,
                     dt,
-                    player.is_stunned(),
                 );
 
                 player.position = (new_pos.x, new_pos.y);
                 player.velocity = (new_vel.x, new_vel.y);
+                player.acceleration = (effective_accel.x, effective_accel.y);
             } else {
                 for carpet in player.carpets.values_mut() {
                     if carpet.is_destroyed() {
                         carpet.velocity = (0.0, 0.0);
+                        carpet.acceleration = (0.0, 0.0);
                         continue;
                     }
 
@@ -89,13 +92,17 @@ impl PhysicsStepHandler for WorldPhysicsEngine {
                         .get(&carpet.id)
                         .or_else(|| commands.get(player_id))
                         .map(|cmd| Vec2::new(cmd.acceleration.0, cmd.acceleration.1))
-                        .unwrap_or(Vec2::ZERO);
+                        .unwrap_or_else(|| Vec2::new(carpet.acceleration.0, carpet.acceleration.1));
 
                     let pos = Vec2::new(carpet.position.0, carpet.position.1);
                     let vel = Vec2::new(carpet.velocity.0, carpet.velocity.1);
 
-                    let env_forces =
-                        crate::spatial::compute_environmental_forces_from_states(pos, &world.anomalies);
+                    let env_forces = crate::spatial::compute_environmental_forces_from_states(
+                        pos,
+                        &world.anomalies,
+                    );
+                    let effective_accel =
+                        compute_effective_accel(cmd_accel, carpet.max_acceleration);
 
                     let (new_pos, new_vel) = self.integrator.step(
                         pos,
@@ -106,11 +113,11 @@ impl PhysicsStepHandler for WorldPhysicsEngine {
                         carpet.max_velocity,
                         self.friction,
                         dt,
-                        carpet.is_stunned(),
                     );
 
                     carpet.position = (new_pos.x, new_pos.y);
                     carpet.velocity = (new_vel.x, new_vel.y);
+                    carpet.acceleration = (effective_accel.x, effective_accel.y);
                 }
                 player.sync_from_carpets();
             }

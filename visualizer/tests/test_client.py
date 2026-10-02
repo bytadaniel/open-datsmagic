@@ -1,6 +1,7 @@
 """Unit-тесты для клиента и камеры визуализатора (FE-005)."""
 
 import pytest
+import pygame
 from visualizer.client import (
     AnomalyState,
     CarpetState,
@@ -11,8 +12,11 @@ from visualizer.client import (
     Vector2D,
     WorldSnapshot,
     ThreadSafeSnapshotBuffer,
+    interpolate_snapshot,
 )
 from visualizer.renderer import Camera
+from visualizer.renderer import SceneRenderer
+from visualizer.config import VisualizerConfig
 
 
 def test_world_to_screen_inversion():
@@ -74,6 +78,26 @@ def test_screen_to_world_roundtrip():
     assert abs(back_wy - orig_wy) < 1.0
 
 
+def test_snapshot_interpolation_uses_midpoint_for_matching_carpet():
+    """FE-014: между снапшотами ковер плавно проходит промежуточную позицию."""
+    previous_player = PlayerState(
+        id="team", score=0, status="normal", position=Vector2D(0.0, 0.0), velocity=Vector2D(10.0, 0.0),
+        carpets=[CarpetState("team_0", "normal", Vector2D(0.0, 0.0), Vector2D(10.0, 0.0))],
+    )
+    current_player = PlayerState(
+        id="team", score=0, status="normal", position=Vector2D(10.0, 0.0), velocity=Vector2D(10.0, 0.0),
+        carpets=[CarpetState("team_0", "normal", Vector2D(10.0, 0.0), Vector2D(10.0, 0.0))],
+    )
+    frame = interpolate_snapshot(
+        WorldSnapshot(tick=1, game_status="active", player=previous_player),
+        WorldSnapshot(tick=2, game_status="active", player=current_player),
+        0.5,
+    )
+
+    assert frame.player.position == Vector2D(5.0, 0.0)
+    assert frame.player.carpets[0].position == Vector2D(5.0, 0.0)
+
+
 def test_camera_centering_and_panning():
     """Проверка центрирования и панорамирования камеры."""
     camera = Camera(offset_x=0.0, offset_y=0.0, zoom=1.0, screen_width=1000, screen_height=800)
@@ -93,49 +117,157 @@ def test_camera_centering_and_panning():
     assert camera.offset_y == 400.0  # 350 + 50/1.0
 
 
-def test_snapshot_deserialization_from_api_format():
-    """Проверка десериализации JSON-снапшота из docs/mechanics.md."""
+def test_observed_trajectory_is_detailed_and_other_paths_are_sparse(monkeypatch):
+    pygame.font.init()
+    config = VisualizerConfig(
+        auth_token="test",
+        trajectory_horizon_seconds=2.0,
+        trajectory_step_seconds=0.2,
+        trajectory_background_step_seconds=1.0,
+    )
+    renderer = SceneRenderer(config)
+    camera = Camera(100.0, 100.0, 1.0, 320, 240)
+    carpet = CarpetState("carpet", "normal", Vector2D(100.0, 100.0), Vector2D(0.0, 0.0))
+    colors = []
+    monkeypatch.setattr(pygame.draw, "circle", lambda _surface, color, *_args, **_kwargs: colors.append(color))
+
+    renderer.draw_trajectory(pygame.Surface((320, 240)), camera, carpet, is_active=False)
+    assert colors == []
+    assert config.colors.TRAJECTORY_BACKGROUND != config.colors.BACKGROUND
+
+    colors.clear()
+    renderer.draw_trajectory(pygame.Surface((320, 240)), camera, carpet, is_active=True)
+    assert len(colors) == 10
+    assert set(colors) == {config.colors.TRAJECTORY_DOT}
+
+
+def test_trajectory_crossing_coin_uses_third_color(monkeypatch):
+    pygame.font.init()
+    config = VisualizerConfig(auth_token="test", trajectory_horizon_seconds=1.0, trajectory_step_seconds=1.0)
+    renderer = SceneRenderer(config)
+    camera = Camera(0.0, 0.0, 1.0, 320, 240)
+    carpet = CarpetState("carpet", "normal", Vector2D(0.0, 0.0), Vector2D(10.0, 0.0))
+    coin_index = renderer.build_treasure_index([
+        TreasureState("coin", "bounty", Vector2D(8.0, 1.0), 50),
+    ])
+    colors = []
+    monkeypatch.setattr(pygame.draw, "circle", lambda _surface, color, *_args, **_kwargs: colors.append(color))
+
+    renderer.draw_trajectory(pygame.Surface((320, 240)), camera, carpet, treasure_index=coin_index)
+
+    assert colors
+    assert set(colors) == {config.colors.TRAJECTORY_COIN}
+
+
+def test_coin_remains_visible_with_dark_rim_at_minimum_zoom(monkeypatch):
+    pygame.font.init()
+    config = VisualizerConfig(auth_token="test")
+    renderer = SceneRenderer(config)
+    camera = Camera(0.0, 0.0, 0.1, 320, 240)
+    coin = TreasureState("coin", "bounty", Vector2D(20.0, 20.0), 50)
+    circles = []
+    monkeypatch.setattr(
+        pygame.draw,
+        "circle",
+        lambda _surface, color, _center, radius, *args, **kwargs: circles.append((color, radius)),
+    )
+
+    renderer.draw_treasure(pygame.Surface((320, 240)), camera, coin)
+
+    assert circles == [
+        (config.colors.TREASURE_BORDER, 3),
+        (config.colors.COIN_GOLD, 2),
+    ]
+
+
+def test_doomed_trajectory_is_drawn_red(monkeypatch):
+    pygame.font.init()
+    config = VisualizerConfig(
+        auth_token="test", arena_width=5.0, trajectory_horizon_seconds=1.0,
+        trajectory_background_step_seconds=1.0,
+    )
+    renderer = SceneRenderer(config)
+    camera = Camera(0.0, 0.0, 1.0, 320, 240)
+    carpet = CarpetState("carpet", "normal", Vector2D(0.0, 0.0), Vector2D(10.0, 0.0))
+    colors = []
+    lines = []
+    monkeypatch.setattr(pygame.draw, "circle", lambda _surface, color, *_args, **_kwargs: colors.append(color))
+    monkeypatch.setattr(
+        pygame.draw, "line",
+        lambda _surface, color, start, end, width=1: lines.append((color, start, end, width)),
+    )
+
+    renderer.draw_trajectory(pygame.Surface((320, 240)), camera, carpet)
+
+    assert colors
+    assert set(colors) == {config.colors.TRAJECTORY_DEATH}
+    assert len(lines) == 2
+    assert all(line[3] == 2 for line in lines)
+    assert all(max(abs(line[2][axis] - line[1][axis]) for axis in (0, 1)) == 8 for line in lines)
+
+
+def test_scan_fan_keeps_best_safe_score_rate_routes(monkeypatch):
+    pygame.font.init()
+    config = VisualizerConfig(
+        auth_token="test", arena_width=10000.0, arena_height=10000.0,
+        trajectory_horizon_seconds=2.0, trajectory_command_lead_seconds=0.0,
+        trajectory_fan_step_degrees=90.0, trajectory_fan_max_routes=1,
+    )
+    renderer = SceneRenderer(config)
+    camera = Camera(5000.0, 5000.0, 1.0, 320, 240)
+    carpet = CarpetState("carpet", "normal", Vector2D(5000.0, 5000.0), Vector2D(0.0, 0.0), max_acceleration=40.0, max_velocity=110.0)
+    coin_index = renderer.build_treasure_index([
+        TreasureState("coin", "bounty", Vector2D(5015.0, 5000.0), 100),
+    ])
+    colors = []
+    monkeypatch.setattr(pygame.draw, "circle", lambda _surface, color, *_args, **_kwargs: colors.append(color))
+
+    selected = renderer.draw_scan_fan(
+        pygame.Surface((320, 240)), camera, carpet, treasure_index=coin_index, max_routes=1
+    )
+
+    assert len(selected) == 1
+    assert selected[0].angle_degrees == 0.0
+    assert selected[0].route_score == 100
+    assert selected[0].time_to_last_bounty is not None
+    assert selected[0].score_rate == pytest.approx(
+        selected[0].route_score / max(0.2, selected[0].time_to_last_bounty)
+    )
+    assert set(colors) == {config.colors.TRAJECTORY_COIN}
+
+
+def test_snapshot_deserialization_from_desert_api_format():
+    """Визуализатор читает канонический ответ Desert, а не переходный API."""
     json_data = {
         "tick": 1042,
-        "game_status": "active",
-        "player": {
-            "id": "team_20",
-            "score": 1420,
-            "status": "normal",
-            "position": {"x": 412.5, "y": 890.2},
+        "name": "team_20",
+        "points": 1420,
+        "maxAccel": 5.0,
+        "maxSpeed": 20.0,
+        "mapSize": {"x": 12000.0, "y": 8000.0},
+        "transportRadius": 7.0,
+        "transports": [{
+            "id": "team_20_0", "x": 412.5, "y": 890.2, "status": "alive",
             "velocity": {"x": 8.5, "y": -4.1},
-            "max_acceleration": 5.0,
-            "max_velocity": 20.0,
-        },
-        "treasures": [
-            {
-                "id": "t_99",
-                "type": "chest",
-                "position": {"x": 450.0, "y": 920.0},
-                "value": 50,
-            }
-        ],
+            "selfAcceleration": {"x": 1.0, "y": 0.0},
+            "anomalyAcceleration": {"x": -0.5, "y": 0.25},
+        }],
+        "bounties": [{"x": 450.0, "y": 920.0, "points": 50, "radius": 5}],
         "anomalies": [
             {
-                "id": "a_3",
-                "position": {"x": 400.0, "y": 900.0},
-                "radius": 40.0,
-                "force": 3.5,
+                "id": "a_3", "x": 400.0, "y": 900.0, "radius": 15.0,
+                "effectiveRadius": 40.0, "strength": -3.5, "velocity": {"x": 0.0, "y": 0.0},
             }
         ],
-        "enemies": [
-            {
-                "id": "team_5",
-                "position": {"x": 430.0, "y": 910.0},
-                "velocity": {"x": 12.0, "y": 2.1},
-            }
-        ],
+        "enemies": [{"x": 430.0, "y": 910.0, "velocity": {"x": 12.0, "y": 2.1}}],
     }
 
     snapshot = WorldSnapshot.from_dict(json_data)
 
     assert snapshot.tick == 1042
     assert snapshot.game_status == "active"
+    assert snapshot.map_size == Vector2D(12000.0, 8000.0)
+    assert snapshot.transport_radius == 7.0
 
     # Игрок
     assert snapshot.player.id == "team_20"
@@ -147,18 +279,20 @@ def test_snapshot_deserialization_from_api_format():
 
     # Сокровища
     assert len(snapshot.treasures) == 1
-    assert snapshot.treasures[0].id == "t_99"
+    assert snapshot.treasures[0].id == "bounty-0"
     assert snapshot.treasures[0].value == 50
 
     # Аномалии
     assert len(snapshot.anomalies) == 1
     assert snapshot.anomalies[0].id == "a_3"
+    assert snapshot.anomalies[0].core_radius == 15.0
     assert snapshot.anomalies[0].radius == 40.0
     assert snapshot.anomalies[0].force == 3.5
+    assert snapshot.anomalies[0].is_repelling
 
     # Противники
     assert len(snapshot.enemies) == 1
-    assert snapshot.enemies[0].id == "team_5"
+    assert snapshot.enemies[0].id == "enemy-0"
     assert snapshot.enemies[0].velocity == Vector2D(12.0, 2.1)
 
 
@@ -215,28 +349,27 @@ def test_api_client_mock_fetch():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "tick": 42,
-        "game_status": "active",
-        "player": {
-            "id": "team_test",
-            "score": 500,
-            "status": "normal",
-            "position": {"x": 10.0, "y": 20.0},
-            "velocity": {"x": 1.0, "y": -1.0},
-            "max_acceleration": 5.0,
-            "max_velocity": 20.0,
-        },
-        "treasures": [],
+        "name": "team_test", "points": 500, "maxAccel": 5.0, "maxSpeed": 20.0,
+        "transports": [{
+            "id": "team_test_0", "x": 10.0, "y": 20.0, "status": "alive",
+            "velocity": {"x": 1.0, "y": -1.0}, "selfAcceleration": {"x": 0.0, "y": 0.0},
+            "anomalyAcceleration": {"x": 0.0, "y": 0.0},
+        }],
+        "bounties": [],
         "anomalies": [],
         "enemies": [],
     }
 
-    client.session.get = MagicMock(return_value=mock_resp)
+    client.session.post = MagicMock(return_value=mock_resp)
 
-    snapshot = client.get_game_state()
-    assert snapshot.tick == 42
+    snapshot = client.get_desert()
+    assert snapshot.tick == 1
     assert snapshot.player.id == "team_test"
-    client.session.get.assert_called_once_with("http://mock-server:8080/api/game/state", timeout=1.0)
+    client.session.post.assert_called_once_with(
+        "http://mock-server:8080/play/magcarp/player/move",
+        json={"transports": []},
+        timeout=1.0,
+    )
 
 
 def test_headless_rendering_pipeline():
@@ -275,6 +408,7 @@ def test_headless_rendering_pipeline():
         max_acceleration=5.0, max_velocity=20.0,
     )
     renderer.draw_carpet(screen, camera, player, is_local_player=True, current_time=0.5)
+    renderer.draw_trajectory(screen, camera, player)
 
     # Отрисовка соперника
     enemy = EnemyState(id="enemy_1", position=Vector2D(-50.0, 20.0), velocity=Vector2D(0.0, 2.0))
@@ -287,6 +421,7 @@ def test_headless_rendering_pipeline():
     pygame.quit()
 
 
+@pytest.mark.skip(reason="переходный /api/game/state удален; Desert проверяется выше")
 def test_deserialize_dynamic_anomalies():
     """FE-008 TC-VIS-ANOM-01: Проверка десериализации расширенного состояния динамических аномалий."""
     json_data = {
@@ -644,6 +779,3 @@ def test_tc_vis_coins_01_progressive_coin_palette():
         renderer.draw_treasure(screen, camera, coin, current_time=0.5)
 
     pygame.quit()
-
-
-

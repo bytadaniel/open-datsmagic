@@ -115,10 +115,10 @@ pub struct CoinSpawnerConfig {
 impl Default for CoinSpawnerConfig {
     fn default() -> Self {
         Self {
-            max_coins: 10,
+            max_coins: 1000,
             base_value: 25,
-            arena_width: 1000.0,
-            arena_height: 1000.0,
+            arena_width: 2200.0,
+            arena_height: 1600.0,
             margin: 40.0,
             max_value_cap: 1000,
         }
@@ -214,12 +214,19 @@ impl CoinSpawner {
             best_y = self.rng.gen_range_f64(min_y, max_y);
         }
 
+        self.create_treasure(tick, Vec2::new(best_x, best_y))
+    }
+
+    fn create_treasure(&mut self, tick: u64, position: Vec2) -> Treasure {
         self.counter += 1;
         let value = self.calculate_value(tick);
         let tier = CoinTier::from_value(value);
-        let id = format!("coin_{}", self.counter);
-
-        Treasure::new(id, tier.as_str(), Vec2::new(best_x, best_y), value)
+        Treasure::new(
+            format!("coin_{}", self.counter),
+            tier.as_str(),
+            position,
+            value,
+        )
     }
 
     /// Восполняет количество монет на карте до квоты `max_coins`
@@ -248,6 +255,87 @@ impl CoinSpawner {
             }
         }
         new_coins
+    }
+
+    /// Восполняет квоту, предпочитая наименее заполненные области арены.
+    /// Размер сетки выводится из квоты и соотношения сторон доступной площади.
+    pub fn replenish_balanced_avoiding_anomalies(
+        &mut self,
+        current_positions: &[Vec2],
+        tick: u64,
+        anomalies: &[AnomalyState],
+    ) -> Vec<Treasure> {
+        let quota = self.config.max_coins;
+        if current_positions.len() >= quota || quota == 0 {
+            return Vec::new();
+        }
+
+        let min_x = self.config.margin;
+        let min_y = self.config.margin;
+        let usable_width = (self.config.arena_width - 2.0 * self.config.margin).max(1.0);
+        let usable_height = (self.config.arena_height - 2.0 * self.config.margin).max(1.0);
+        let columns = ((quota as f64 * usable_width / usable_height).sqrt().ceil() as usize).max(1);
+        let rows = quota.div_ceil(columns).max(1);
+        let cell_width = usable_width / columns as f64;
+        let cell_height = usable_height / rows as f64;
+        let mut occupancy = vec![0usize; columns * rows];
+        let cell_index = |position: Vec2| {
+            let column = (((position.x - min_x) / cell_width).floor() as isize)
+                .clamp(0, columns as isize - 1) as usize;
+            let row = (((position.y - min_y) / cell_height).floor() as isize)
+                .clamp(0, rows as isize - 1) as usize;
+            row * columns + column
+        };
+        for &position in current_positions {
+            occupancy[cell_index(position)] += 1;
+        }
+
+        let mut spawned = Vec::with_capacity(quota - current_positions.len());
+        for _ in current_positions.len()..quota {
+            let least_occupied = occupancy.iter().copied().min().unwrap_or(0);
+            let candidate_count = occupancy
+                .iter()
+                .filter(|count| **count == least_occupied)
+                .count();
+            let selected_tie = self.rng.gen_range_usize(0, candidate_count);
+            let selected = occupancy
+                .iter()
+                .enumerate()
+                .filter_map(|(index, count)| (*count == least_occupied).then_some(index))
+                .nth(selected_tie)
+                .expect("least-occupied candidate exists");
+            let column = selected % columns;
+            let row = selected / columns;
+            let left = min_x + column as f64 * cell_width;
+            let bottom = min_y + row as f64 * cell_height;
+            let right = (left + cell_width).min(self.config.arena_width - self.config.margin);
+            let top = (bottom + cell_height).min(self.config.arena_height - self.config.margin);
+
+            // Try to keep spawns outside anomaly cores without changing the chosen region.
+            let mut position = Vec2::new(
+                self.rng.gen_range_f64(left, right),
+                self.rng.gen_range_f64(bottom, top),
+            );
+            for _ in 0..10 {
+                let in_core = anomalies.iter().any(|anomaly| {
+                    let dx = position.x - anomaly.position.0;
+                    let dy = position.y - anomaly.position.1;
+                    let safe_distance = anomaly.core_radius + 5.0;
+                    dx * dx + dy * dy <= safe_distance * safe_distance
+                });
+                if !in_core {
+                    break;
+                }
+                position = Vec2::new(
+                    self.rng.gen_range_f64(left, right),
+                    self.rng.gen_range_f64(bottom, top),
+                );
+            }
+
+            occupancy[selected] += 1;
+            spawned.push(self.create_treasure(tick, position));
+        }
+        spawned
     }
 }
 
@@ -281,6 +369,45 @@ mod tests {
         ids.extend(replenished.into_iter().map(|c| c.id));
         let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique_ids.len(), 13);
+    }
+
+    #[test]
+    fn replenishment_prefers_least_occupied_region() {
+        let config = CoinSpawnerConfig {
+            max_coins: 4,
+            arena_width: 1000.0,
+            arena_height: 1000.0,
+            margin: 40.0,
+            ..Default::default()
+        };
+        let mut spawner = CoinSpawner::with_seed(config, 7);
+        let live = [
+            Vec2::new(100.0, 100.0),
+            Vec2::new(600.0, 100.0),
+            Vec2::new(700.0, 200.0),
+        ];
+        let spawned = spawner.replenish_balanced_avoiding_anomalies(&live, 10, &[]);
+        assert_eq!(spawned.len(), 1);
+        let position = spawned[0].position;
+        assert!(position.x >= 500.0 || position.y >= 500.0);
+    }
+
+    #[test]
+    fn balanced_replenishment_keeps_quota_and_arena_margin() {
+        let config = CoinSpawnerConfig {
+            max_coins: 64,
+            arena_width: 9000.0,
+            arena_height: 9000.0,
+            margin: 40.0,
+            ..Default::default()
+        };
+        let mut spawner = CoinSpawner::with_seed(config, 99);
+        let spawned = spawner.replenish_balanced_avoiding_anomalies(&[], 1, &[]);
+        assert_eq!(spawned.len(), 64);
+        for coin in spawned {
+            assert!((40.0..=8960.0).contains(&coin.position.x));
+            assert!((40.0..=8960.0).contains(&coin.position.y));
+        }
     }
 
     /// TC-COIN-02: Проверка временной прогрессии номинала от номера тика
@@ -345,14 +472,16 @@ mod tests {
         for _ in 0..500 {
             let coin = spawner.spawn_one(100);
             assert!(
-                coin.position.x >= config.margin && coin.position.x <= config.arena_width - config.margin,
+                coin.position.x >= config.margin
+                    && coin.position.x <= config.arena_width - config.margin,
                 "Координата X ({}) вышла за безопасные границы [{}, {}]",
                 coin.position.x,
                 config.margin,
                 config.arena_width - config.margin
             );
             assert!(
-                coin.position.y >= config.margin && coin.position.y <= config.arena_height - config.margin,
+                coin.position.y >= config.margin
+                    && coin.position.y <= config.arena_height - config.margin,
                 "Координата Y ({}) вышла за безопасные границы [{}, {}]",
                 coin.position.y,
                 config.margin,

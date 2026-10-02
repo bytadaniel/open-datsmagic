@@ -109,23 +109,32 @@ pub struct AnomalySpawnerConfig {
     pub force_min: f64,
     /// Максимальная сила вихря F_max
     pub force_max: f64,
+    /// Вероятность исключения из зависимости силы от размера
+    pub force_outlier_probability: f64,
+    /// Нижняя граница силы редких выбросов, превосходящих max_acceleration
+    pub force_outlier_min: f64,
+    /// Верхняя граница силы редких выбросов
+    pub force_outlier_max: f64,
 }
 
 impl Default for AnomalySpawnerConfig {
     fn default() -> Self {
         Self {
-            max_anomalies: 10,
-            arena_width: 1000.0,
-            arena_height: 1000.0,
+            max_anomalies: 50,
+            arena_width: 2200.0,
+            arena_height: 1600.0,
             buffer_distance: 50.0,
-            speed_min: 15.0,
-            speed_max: 35.0,
-            core_radius_min: 10.0,
-            core_radius_max: 20.0,
-            effect_radius_min: 30.0,
-            effect_radius_max: 200.0,
-            force_min: 1.0,
-            force_max: 10.0,
+            speed_min: 30.0,
+            speed_max: 160.0,
+            core_radius_min: 20.0,
+            core_radius_max: 30.0,
+            effect_radius_min: 300.0,
+            effect_radius_max: 2000.0,
+            force_min: 4.0,
+            force_max: 22.0,
+            force_outlier_probability: 0.1,
+            force_outlier_min: 55.0,
+            force_outlier_max: 100.0,
         }
     }
 }
@@ -252,9 +261,19 @@ impl AnomalySpawner {
             .gen_range_f64(self.config.core_radius_min, self.config.core_radius_max)
             .min(effect_radius - 10.0)
             .max(1.0);
-        let force = self
-            .rng
-            .gen_range_f64(self.config.force_min, self.config.force_max);
+        let radius_span = self.config.effect_radius_max - self.config.effect_radius_min;
+        let size_ratio = if radius_span > 0.0 {
+            ((effect_radius - self.config.effect_radius_min) / radius_span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let outlier_probability = self.config.force_outlier_probability.clamp(0.0, 1.0);
+        let force = if self.rng.next_f64() < outlier_probability {
+            self.rng
+                .gen_range_f64(self.config.force_outlier_min, self.config.force_outlier_max)
+        } else {
+            self.config.force_max - (self.config.force_max - self.config.force_min) * size_ratio
+        };
         let speed = self
             .rng
             .gen_range_f64(self.config.speed_min, self.config.speed_max);
@@ -425,5 +444,26 @@ mod tests {
 
         let one_spawned = spawner.replenish_if_needed(2);
         assert_eq!(one_spawned.len(), 1);
+    }
+
+    #[test]
+    fn test_spawner_emits_rare_uncompensatable_force_outliers() {
+        let config = AnomalySpawnerConfig::default();
+        assert_eq!(config.max_anomalies, 50);
+        let mut spawner = AnomalySpawner::with_seed(config, 0xDA75_2026);
+        let samples = (0..1000)
+            .map(|_| spawner.spawn_one().force)
+            .collect::<Vec<_>>();
+        let outliers = samples
+            .iter()
+            .filter(|force| (55.0..=100.0).contains(*force))
+            .count();
+        assert!(
+            (50..=150).contains(&outliers),
+            "expected approximately 10% rare outliers, got {outliers}/1000"
+        );
+        assert!(samples
+            .iter()
+            .all(|force| { (4.0..=22.0).contains(force) || (55.0..=100.0).contains(force) }));
     }
 }

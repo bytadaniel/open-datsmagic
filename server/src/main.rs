@@ -47,13 +47,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let shared = engine.shared_state();
         let mut state = shared.write().await;
         if config.enable_coin_spawner {
-            let mut spawner = server::spatial::CoinSpawner::new(server::spatial::CoinSpawnerConfig {
-                arena_width: config.arena_width,
-                arena_height: config.arena_height,
-                max_coins: 10,
-                ..Default::default()
-            });
-            let initial_coins = spawner.replenish(0, 0);
+            let mut spawner =
+                server::spatial::CoinSpawner::new(server::spatial::CoinSpawnerConfig {
+                    arena_width: config.arena_width,
+                    arena_height: config.arena_height,
+                    max_coins: config.bounty_quota,
+                    ..Default::default()
+                });
+            let initial_coins = spawner.replenish_balanced_avoiding_anomalies(&[], 0, &[]);
             state.world.treasures.extend(
                 initial_coins
                     .into_iter()
@@ -72,13 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("t_9", "chest", 750.0, 500.0, 75),
             ];
             for (id, r#type, x, y, val) in treasure_spots {
-                state.world.treasures.push(server::engine::state::TreasureState {
-                    id: id.to_string(),
-                    r#type: r#type.to_string(),
-                    position: (x, y),
-                    value: val,
-                    is_collected: false,
-                });
+                state
+                    .world
+                    .treasures
+                    .push(server::engine::state::TreasureState {
+                        id: id.to_string(),
+                        r#type: r#type.to_string(),
+                        position: (x, y),
+                        value: val,
+                        is_collected: false,
+                    });
             }
         }
     }

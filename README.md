@@ -2,7 +2,7 @@
 
 > Высокопроизводительный пошагово-непрерывный симулятор управления ковром-самолетом и автономный 2D-визуализатор телеметрии.
 
-Проект разработан по методологии **Spec-Driven Design (SDD)**, где каталог [`docs/`](docs/) является **единственным источником правды (Single Source of Truth, SSOT)**.
+Проект разработан по методологии **Spec-Driven Design (SDD)**. Корневой [`docs/`](docs/) задает механику игры и API сервера; изолированный клиент ведет собственные спецификации в [`visualizer_2/docs/`](visualizer_2/docs/).
 
 ---
 
@@ -14,7 +14,8 @@
 datsmagic/
 ├── docs/             # [SSOT] Спецификации: mechanics.md, adr/, domain/, features/
 ├── server/           # Высокопроизводительный Rust-сервер симулятора (Axum + Tokio)
-├── visualizer/       # Графический 2D-клиент телеметрии на Python (Pygame)
+├── visualizer_2/     # Основной автономный Rust-визуализатор (egui/glow)
+├── visualizer/       # Legacy Python-клиент (fallback)
 ├── scripts/          # Скрипты локального запуска (run_server.sh, run_visualizer.sh)
 ├── AGENTS.md         # Руководство и правила Spec-Driven Design для AI-агентов
 ├── Cargo.toml        # Корневой манифест Cargo Workspace
@@ -27,10 +28,10 @@ datsmagic/
    - **Engine ([FE-001](docs/features/FE-001-server-runtime-and-game-loop.md))**: Тактовый таймер $\Delta t = 200\text{ ms}$ (5 Hz), буфер команд с защитой от race conditions и rate-limiting.
    - **Physics ([FE-002](docs/features/FE-002-euler-physics-engine.md))**: 2D векторный интегратор Эйлера, затухание вязкого трения ($k_f = 0.98$), ограничение ускорения ($A_{max}$) и предельной скорости ($V_{max}$).
    - **Spatial & Collisions ([FE-003](docs/features/FE-003-spatial-entities-and-collisions.md))**: Взаимодействие сущностей, захват сокровищ в радиусе $R_{capture}$, суперпозиция гравитационных аномалий $F_{pull}$, механика оглушения (`stunned`).
-   - **REST API ([FE-004](docs/features/FE-004-simulation-rest-api.md))**: Асинхронный сервер Axum (`GET /api/game/state`, `POST /api/carpet/command`), авторизация через `X-Auth-Token`.
+   - **REST API ([FE-015](docs/features/FE-015-legacy-desert-api-compatibility.md))**: Канонический Desert API `POST /play/magcarp/player/move`, авторизация через `X-Auth-Token`.
 
-2. **Python Визуализатор (`visualizer/`)**:
-   - **Visualizer ([FE-005](docs/features/FE-005-python-2d-visualizer.md))**: 60 FPS интерфейс на Pygame с инверсией оси $Y$ (`world_to_screen`), плавным панорамированием, масштабированием (zoom), слежением за игроком (follow camera), векторными стрелками скорости, анимированными вихрями и HUD-телеметрией.
+2. **Rust-визуализатор (`visualizer_2/`)**:
+   - Нативное окно и scene painter на `eframe/egui`, отдельный REST-поток, интерактивное наблюдение, ручное управление, HUD, прогноз маршрутов и регулируемый веер. Спецификация: [`visualizer_2/docs/`](visualizer_2/docs/).
 
 ---
 
@@ -48,25 +49,27 @@ cargo run --bin server
 ```
 Сервер будет доступен по адресу `http://127.0.0.1:8080`.
 
-### 2. Запуск 2D-визуализатора
+### 2. Запуск визуализатора на Rust
 В отдельном окне терминала выполните:
 ```bash
-./scripts/run_visualizer.sh
+cargo run --manifest-path visualizer_2/Cargo.toml -- --url http://127.0.0.1:8080 --token dev-token
 ```
-Скрипт автоматически создаст виртуальное окружение `visualizer/.venv`, установит зависимости из `requirements.txt` и запустит графический интерфейс.
+
+`--token` обязателен. Для более частого/редкого запроса можно задать `--poll-ms 200`.
 
 Параметры запуска:
 ```bash
-./scripts/run_visualizer.sh --url http://127.0.0.1:8080 --token dev-token --width 1280 --height 720
+cargo run --manifest-path visualizer_2/Cargo.toml -- --url http://127.0.0.1:8080 --token dev-token
 ```
 
 #### Управление в визуализаторе:
-- **`Пробел`**: Включить/выключить режим автоматического слежения камеры за игроком.
+- **Клик по ковру / `1`–`5`**: Выбрать ковер для наблюдения.
+- **`M`**: Включить/выключить ручное управление мышью.
+- **`P`**: Показать/скрыть веер прогнозных маршрутов.
+- **`Пробел`**: Включить/выключить слежение камеры за выбранным ковром.
 - **`+` / `-` / Колесо мыши**: Приблизить / отдалить масштаб сцены (Zoom).
-- **`W`, `A`, `S`, `D` / Стрелки**: Ручное перемещение камеры по карте.
-- **Зажатая ЛКМ**: Панорамирование сцены перетаскиванием мыши.
-- **`R`**: Сброс позиции камеры и масштаба в начальное состояние.
-- **`Escape`**: Выход из визуализатора.
+- **Drag / стрелки**: Панорамирование сцены.
+- **`R`**: Сброс камеры и масштаба.
 
 ---
 
@@ -81,10 +84,12 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Тесты Python-визуализатора
+### Проверка Rust-визуализатора
 ```bash
-visualizer/.venv/bin/pytest visualizer/tests
+cargo check --manifest-path visualizer_2/Cargo.toml
 ```
+
+Python fallback по-прежнему запускается через `./scripts/run_visualizer.sh`.
 
 ---
 
@@ -93,6 +98,5 @@ visualizer/.venv/bin/pytest visualizer/tests
 В соответствии с правилами в [AGENTS.md](AGENTS.md):
 - [docs/mechanics.md](docs/mechanics.md) — Базовая игровая механика и математические формулы.
 - [docs/adr/](docs/adr/) — Архитектурные решения (ADR-001, ADR-002).
-- [docs/domain/](docs/domain/) — Записи предметных областей (DR-001 — DR-005).
-- [docs/features/](docs/features/) — Технические спецификации фичей (FE-001 — FE-008).
-
+- [docs/domain/](docs/domain/) и [docs/features/](docs/features/) — игровые правила и серверные фичи.
+- [visualizer_2/docs/](visualizer_2/docs/) — домен, архитектура и фичи Rust-визуализатора.

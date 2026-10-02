@@ -80,7 +80,7 @@ fn test_treasure_collected_within_radius() {
     let player_pos = Vec2::new(20.0, 25.0); // d = 5.0
     let capture_radius = 5.0; // ровно на границе
 
-    let score = manager.resolve_treasure_captures(player_pos, capture_radius);
+    let score = manager.resolve_treasure_captures(player_pos, player_pos, capture_radius);
     assert_eq!(score, 100);
     assert_eq!(manager.treasures.len(), 0);
 }
@@ -95,7 +95,7 @@ fn test_treasure_not_collected_outside_radius() {
     let player_pos = Vec2::new(20.0, 25.1); // d = 5.1 > 5.0
     let capture_radius = 5.0;
 
-    let score = manager.resolve_treasure_captures(player_pos, capture_radius);
+    let score = manager.resolve_treasure_captures(player_pos, player_pos, capture_radius);
     assert_eq!(score, 0);
     assert_eq!(manager.treasures.len(), 1);
 }
@@ -109,7 +109,7 @@ fn test_multiple_treasures_collected_in_single_tick() {
     manager.add_treasure(Treasure::new("t3", "chest", Vec2::new(3.0, 0.0), 50));
     manager.add_treasure(Treasure::new("t4", "far", Vec2::new(100.0, 0.0), 500));
 
-    let score = manager.resolve_treasure_captures(Vec2::ZERO, 5.0);
+    let score = manager.resolve_treasure_captures(Vec2::ZERO, Vec2::ZERO, 5.0);
     assert_eq!(score, 80); // 10 + 20 + 50
     assert_eq!(manager.treasures.len(), 1);
     assert_eq!(manager.treasures[0].id, "t4");
@@ -172,6 +172,7 @@ async fn test_game_engine_spatial_and_physics_full_cycle() {
             status: "normal".to_string(),
             position: (0.0, 0.0),
             velocity: (0.0, 0.0),
+            acceleration: (0.0, 0.0),
             max_acceleration: 5.0,
             max_velocity: 50.0,
             stun_remaining_ticks: 0,
@@ -213,11 +214,12 @@ async fn test_game_engine_spatial_and_physics_full_cycle() {
     assert_eq!(snapshot.world.treasures.len(), 0);
 }
 
-/// Сквозная интеграция GameEngine: проверка наложения и снятия оглушения в эпицентре
+/// Сквозная интеграция GameEngine: центр аномалии не отключает управление
 #[tokio::test]
-async fn test_game_engine_stun_lifecycle_in_epicenter() {
+async fn test_game_engine_applies_command_in_anomaly_epicenter() {
     let config = ServerConfig {
         tick_rate_ms: 200,
+        enable_respawn: false,
         ..Default::default()
     };
 
@@ -228,7 +230,8 @@ async fn test_game_engine_stun_lifecycle_in_epicenter() {
         let shared_state = engine.shared_state();
         let mut state = shared_state.write().await;
 
-        let player = PlayerState::new("stun_tester".to_string(), 10.0, 10.0, 5.0, 20.0);
+        let mut player = PlayerState::new("stun_tester".to_string(), 10.0, 10.0, 5.0, 20.0);
+        player.carpets.clear();
         state.world.players.insert(player.id.clone(), player);
 
         // Аномалия в той же точке (10.0, 10.0), радиус 40.0, эпицентр = 10.0
@@ -238,33 +241,54 @@ async fn test_game_engine_stun_lifecycle_in_epicenter() {
             .push(AnomalyState::new("vortex_center", (10.0, 10.0), 40.0, 2.0));
     }
 
-    // Шаг 1: Игрок попадает под эффект оглушения в эпицентре
+    engine
+        .register_command("stun_tester".to_string(), PlayerCommand::new(5.0, 0.0))
+        .unwrap();
     engine.step_once().await;
 
     let snapshot = engine.get_snapshot();
     let player = snapshot.world.players.get("stun_tester").unwrap();
-    assert_eq!(player.status, "stunned");
-    assert_eq!(player.stun_remaining_ticks, 5);
+    assert_eq!(player.status, "normal");
+    assert_eq!(player.acceleration, (5.0, 0.0));
+}
 
-    // Удаляем аномалию, чтобы игрок мог восстановиться по истечении таймера
+/// FE-013: ковер, покинувший арену, получает обычный путь гибели и респавна.
+#[tokio::test]
+async fn test_out_of_bounds_carpet_respawns_by_default() {
+    let config = ServerConfig {
+        arena_width: 200.0,
+        arena_height: 200.0,
+        ..Default::default()
+    };
+    assert!(config.enable_respawn);
+    let engine = GameEngine::new(config);
+
     {
-        let shared_state = engine.shared_state();
-        let mut state = shared_state.write().await;
-        state.world.anomalies.clear();
+        let shared = engine.shared_state();
+        let mut state = shared.write().await;
+        let mut player = PlayerState::new("boundary_runner".to_string(), 100.0, 100.0, 5.0, 20.0);
+        let carpet = player.carpets.get_mut("boundary_runner_0").unwrap();
+        carpet.position = (-1.0, 100.0);
+        player.sync_from_carpets();
+        state.world.players.insert(player.id.clone(), player);
     }
 
-    // Симулируем 5 тиков
-    for expected_remaining in (0..5).rev() {
-        engine.step_once().await;
-        let snap = engine.get_snapshot();
-        let p = snap.world.players.get("stun_tester").unwrap();
-        assert_eq!(p.stun_remaining_ticks, expected_remaining);
-        if expected_remaining == 0 {
-            assert_eq!(p.status, "normal");
-        } else {
-            assert_eq!(p.status, "stunned");
-        }
-    }
+    engine.step_once().await;
+
+    let snapshot = engine.get_snapshot();
+    let carpet = snapshot
+        .world
+        .players
+        .get("boundary_runner")
+        .unwrap()
+        .carpets
+        .get("boundary_runner_0")
+        .unwrap();
+    assert_eq!(carpet.status, "normal");
+    assert!((0.0..=200.0).contains(&carpet.position.0));
+    assert!((0.0..=200.0).contains(&carpet.position.1));
+    assert_eq!(carpet.velocity, (0.0, 0.0));
+    assert_eq!(carpet.acceleration, (0.0, 0.0));
 }
 
 /// DR-003 Бизнес-правило 1: "Правило одновременного сбора:
@@ -371,6 +395,7 @@ async fn test_dynamic_anomaly_lifecycle_spawn_cross_despawn() {
 async fn test_player_elimination_in_game_loop() {
     let config = ServerConfig {
         tick_rate_ms: 200,
+        enable_respawn: false,
         ..Default::default()
     };
     let engine = GameEngine::new(config);
@@ -483,6 +508,57 @@ fn test_world_spatial_engine_coin_quota_replenish() {
     assert_eq!(world.treasures.len(), 10);
 }
 
+/// Собирает монету при пересечении суммы радиусов между endpoint-ами тика.
+#[test]
+fn test_bounty_is_collected_on_partial_swept_overlap() {
+    let mut engine = WorldSpatialEngine::default().with_arena(1000.0, 1000.0);
+    let mut world = WorldData::new();
+    let mut player = PlayerState::new("sweeper".to_string(), 100.0, 100.0, 40.0, 110.0);
+    player.carpets.clear();
+    world.players.insert(player.id.clone(), player);
+
+    // Capture the start of even the very first physical tick.
+    engine.capture_start_positions(&world);
+    world.players.get_mut("sweeper").unwrap().position = (120.0, 100.0);
+    world.treasures.push(TreasureState {
+        id: "partial-overlap".into(),
+        r#type: "coin".into(),
+        position: (110.0, 109.999), // 9.999 units from the swept centerline.
+        value: 75,
+        is_collected: false,
+    });
+
+    engine.resolve(&mut world, 0.2);
+
+    assert_eq!(world.players["sweeper"].score, 75);
+    assert!(world.treasures.is_empty());
+}
+
+/// Касание не срабатывает, если круги всё ещё разделены даже на малую величину.
+#[test]
+fn test_bounty_swept_near_miss_outside_combined_radius_is_not_collected() {
+    let mut engine = WorldSpatialEngine::default().with_arena(1000.0, 1000.0);
+    let mut world = WorldData::new();
+    let mut player = PlayerState::new("near-miss".to_string(), 100.0, 100.0, 40.0, 110.0);
+    player.carpets.clear();
+    world.players.insert(player.id.clone(), player);
+
+    engine.capture_start_positions(&world);
+    world.players.get_mut("near-miss").unwrap().position = (120.0, 100.0);
+    world.treasures.push(TreasureState {
+        id: "outside".into(),
+        r#type: "coin".into(),
+        position: (110.0, 110.001),
+        value: 75,
+        is_collected: false,
+    });
+
+    engine.resolve(&mut world, 0.2);
+
+    assert_eq!(world.players["near-miss"].score, 0);
+    assert_eq!(world.treasures.len(), 1);
+}
+
 /// TC-COIN-02 / AC-03: Прогрессивный рост номинала монет от номера тика
 #[test]
 fn test_progressive_coin_spawner_value_across_ticks() {
@@ -522,6 +598,7 @@ async fn test_game_engine_progressive_coin_spawner_integration() {
     let config = ServerConfig {
         arena_width: 500.0,
         arena_height: 500.0,
+        bounty_quota: 30,
         enable_coin_spawner: true,
         enable_spawner: false,
         ..Default::default()
@@ -540,19 +617,22 @@ async fn test_game_engine_progressive_coin_spawner_integration() {
         );
     }
 
-    // Выполняем 1 такт: спавнятся 10 монет
+    // Выполняем 1 такт: спавнятся 30 монет согласно базовой квоте FE-017
     engine.step_once().await;
 
     let snap1 = engine.get_snapshot();
-    assert_eq!(snap1.world.treasures.len(), 10);
+    assert_eq!(snap1.world.treasures.len(), 30);
     assert_eq!(snap1.tick, 1);
 
     // Перемещаем одну из монет прямо под ноги игрока для гарантированного сбора
-    let target_coin_value = {
+    let (target_coin_value, score_before_capture) = {
         let shared = engine.shared_state();
         let mut state = shared.write().await;
         state.world.treasures[0].position = (250.0, 250.0);
-        state.world.treasures[0].value
+        (
+            state.world.treasures[0].value,
+            state.world.players.get(&player_id).unwrap().score,
+        )
     };
 
     // Выполняем такт сбора: монета должна быть захвачена
@@ -560,12 +640,12 @@ async fn test_game_engine_progressive_coin_spawner_integration() {
 
     let snap2 = engine.get_snapshot();
     let player = snap2.world.players.get(&player_id).unwrap();
-    assert_eq!(player.score, target_coin_value);
+    assert_eq!(player.score, score_before_capture + target_coin_value);
 
     // Выполняем еще один такт: монета должна быть автоматически восполнена
     engine.step_once().await;
     let snap3 = engine.get_snapshot();
-    assert_eq!(snap3.world.treasures.len(), 10);
+    assert_eq!(snap3.world.treasures.len(), 30);
 }
 
 /// FE-011 / TC-COLL-01: Лобовое сближение двух ковров на дистанцию <= 2 * R_player взаимно уничтожает оба ковра.
@@ -790,4 +870,3 @@ async fn test_tc_coll_04_safe_carpet_respawn_avoiding_hazards() {
         }
     }
 }
-

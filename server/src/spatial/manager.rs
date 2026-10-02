@@ -35,9 +35,14 @@ pub trait SpatialCollisionManager: Send + Sync {
     /// Вычисляет суммарный вектор гравитационных сил окружения от всех аномалий
     fn compute_environmental_forces(&self, player_pos: Vec2) -> Vec2;
 
-    /// Проверяет и выполняет захват сокровищ в радиусе `capture_radius`.
+    /// Проверяет swept-касание отрезка движения с эффективным радиусом `capture_radius`.
     /// Начисляет суммарные очки и удаляет собранные сокровища из пула.
-    fn resolve_treasure_captures(&mut self, player_pos: Vec2, capture_radius: f64) -> u32;
+    fn resolve_treasure_captures(
+        &mut self,
+        previous_pos: Vec2,
+        current_pos: Vec2,
+        capture_radius: f64,
+    ) -> u32;
 
     /// Проверяет нахождение игрока в эпицентре аномалий для наложения оглушения
     fn check_and_update_stuns(&mut self, player_pos: Vec2) -> bool;
@@ -238,7 +243,17 @@ impl EntityManager {
     /// Пополняет пул сокровищ до квоты max_coins
     pub fn replenish_coins(&mut self) {
         if let Some(ref mut coin_spawner) = self.coin_spawner {
-            let spawned = coin_spawner.replenish(self.treasures.len(), self.current_tick);
+            let live_positions = self
+                .treasures
+                .iter()
+                .filter(|treasure| !treasure.is_collected)
+                .map(|treasure| treasure.position)
+                .collect::<Vec<_>>();
+            let spawned = coin_spawner.replenish_balanced_avoiding_anomalies(
+                &live_positions,
+                self.current_tick,
+                &[],
+            );
             self.treasures.extend(spawned);
         }
     }
@@ -283,9 +298,18 @@ impl SpatialCollisionManager for EntityManager {
         legacy_forces + dynamic_forces
     }
 
-    /// Реализует раздел 4.2 FE-003: сбор сокровищ в радиусе capture_radius
-    fn resolve_treasure_captures(&mut self, player_pos: Vec2, capture_radius: f64) -> u32 {
-        if !player_pos.is_finite() || !capture_radius.is_finite() || capture_radius <= 0.0 {
+    /// Реализует swept-сбор сокровищ на сегменте тика с эффективным радиусом касания.
+    fn resolve_treasure_captures(
+        &mut self,
+        previous_pos: Vec2,
+        current_pos: Vec2,
+        capture_radius: f64,
+    ) -> u32 {
+        if !previous_pos.is_finite()
+            || !current_pos.is_finite()
+            || !capture_radius.is_finite()
+            || capture_radius <= 0.0
+        {
             return 0;
         }
 
@@ -294,7 +318,8 @@ impl SpatialCollisionManager for EntityManager {
 
         for treasure in &mut self.treasures {
             if !treasure.is_collected {
-                let dist_sq = (player_pos - treasure.position).length_squared();
+                let dist_sq =
+                    point_segment_distance_squared(treasure.position, previous_pos, current_pos);
                 if dist_sq <= radius_sq {
                     treasure.is_collected = true;
                     total_score += treasure.value;
@@ -360,7 +385,7 @@ impl SpatialCollisionManager for EntityManager {
 /// Серверный обработчик фазы пространственных коллизий для интеграции в GameEngine
 #[derive(Clone, Debug)]
 pub struct WorldSpatialEngine {
-    /// Радиус сбора сокровищ R_capture
+    /// Эффективная дистанция касания (R_player + R_coin), в текущей конфигурации 10.
     pub capture_radius: f64,
     /// Отношение радиуса эпицентра к радиусу вихря
     pub stun_radius_ratio: f64,
@@ -384,6 +409,8 @@ pub struct WorldSpatialEngine {
     pub enable_carpet_respawn: bool,
     /// Детерминированный генератор псевдослучайных чисел для безопасного переспавна
     pub rng: SimpleRng,
+    /// Позиции сущностей после последнего пространственного шага, для swept-захвата монет.
+    previous_positions: HashMap<String, Vec2>,
 }
 
 impl Default for WorldSpatialEngine {
@@ -401,6 +428,7 @@ impl Default for WorldSpatialEngine {
             death_penalty_score: DEFAULT_DEATH_PENALTY,
             enable_carpet_respawn: false,
             rng: SimpleRng::new(42),
+            previous_positions: HashMap::new(),
         }
     }
 }
@@ -421,7 +449,14 @@ impl WorldSpatialEngine {
             death_penalty_score: DEFAULT_DEATH_PENALTY,
             enable_carpet_respawn: false,
             rng: SimpleRng::new(42),
+            previous_positions: HashMap::new(),
         }
+    }
+
+    /// Sets the effective touch distance (carpet radius plus bounty radius).
+    pub fn with_capture_radius(mut self, capture_radius: f64) -> Self {
+        self.capture_radius = capture_radius.max(0.0);
+        self
     }
 
     /// Устанавливает генератор аномалий
@@ -611,12 +646,16 @@ impl WorldSpatialEngine {
             }
 
             // 2. Проверка безопасного расстояния до других живых ковров: dist > 4 * R_player
-            let near_other_carpet = world.players.values().filter(|p| !p.is_destroyed()).any(|p| {
-                p.carpets.values().filter(|c| !c.is_destroyed()).any(|c| {
-                    let c_pos = Vec2::new(c.position.0, c.position.1);
-                    candidate.distance_squared(c_pos) <= carpet_safe_dist_sq
-                })
-            });
+            let near_other_carpet = world
+                .players
+                .values()
+                .filter(|p| !p.is_destroyed())
+                .any(|p| {
+                    p.carpets.values().filter(|c| !c.is_destroyed()).any(|c| {
+                        let c_pos = Vec2::new(c.position.0, c.position.1);
+                        candidate.distance_squared(c_pos) <= carpet_safe_dist_sq
+                    })
+                });
             if near_other_carpet {
                 continue;
             }
@@ -658,6 +697,7 @@ impl WorldSpatialEngine {
                 if let Some(carpet) = player.carpets.get_mut(&carpet_id) {
                     carpet.position = (spawn_x, spawn_y);
                     carpet.velocity = (0.0, 0.0);
+                    carpet.acceleration = (0.0, 0.0);
                     carpet.status = "normal".to_string();
                     carpet.stun_remaining_ticks = 0;
                 }
@@ -672,6 +712,7 @@ impl WorldSpatialEngine {
             if let Some(player) = world.players.get_mut(&player_id) {
                 player.position = (spawn_x, spawn_y);
                 player.velocity = (0.0, 0.0);
+                player.acceleration = (0.0, 0.0);
                 player.status = "normal".to_string();
                 player.stun_remaining_ticks = 0;
             }
@@ -680,12 +721,49 @@ impl WorldSpatialEngine {
 }
 
 impl SpatialStepHandler for WorldSpatialEngine {
+    fn capture_start_positions(&mut self, world: &WorldData) {
+        self.previous_positions.clear();
+        for player in world.players.values() {
+            if player.carpets.is_empty() {
+                self.previous_positions
+                    .insert(player.id.clone(), Vec2::from_tuple(player.position));
+            } else {
+                for carpet in player.carpets.values() {
+                    self.previous_positions
+                        .insert(carpet.id.clone(), Vec2::from_tuple(carpet.position));
+                }
+            }
+        }
+    }
+
     fn set_tick(&mut self, tick: u64) {
         self.current_tick = tick;
     }
 
     fn resolve(&mut self, world: &mut WorldData, dt: f64) {
         let cap_rad_sq = self.capture_radius * self.capture_radius;
+        let mut movement_segments = HashMap::new();
+        for player in world.players.values() {
+            if player.carpets.is_empty() {
+                let end = Vec2::from_tuple(player.position);
+                let start = self
+                    .previous_positions
+                    .get(&player.id)
+                    .copied()
+                    .unwrap_or(end);
+                movement_segments.insert(player.id.clone(), (start, end));
+            } else {
+                for carpet in player.carpets.values() {
+                    let end = Vec2::from_tuple(carpet.position);
+                    let start = self
+                        .previous_positions
+                        .get(&carpet.id)
+                        .copied()
+                        .unwrap_or(end);
+                    movement_segments.insert(carpet.id.clone(), (start, end));
+                }
+            }
+        }
 
         // Шаг 1: Продвижение динамических аномалий, деспавн и восполнение
         for anomaly in &mut world.anomalies {
@@ -709,8 +787,14 @@ impl SpatialStepHandler for WorldSpatialEngine {
 
         // Шаг 1b: Проверка квоты и пополнение пула прогрессивных монет (FE-009 / DR-008)
         if let Some(ref mut coin_spawner) = self.coin_spawner {
-            let spawned = coin_spawner.replenish_avoiding_anomalies(
-                world.treasures.len(),
+            let live_positions = world
+                .treasures
+                .iter()
+                .filter(|treasure| !treasure.is_collected)
+                .map(|treasure| Vec2::new(treasure.position.0, treasure.position.1))
+                .collect::<Vec<_>>();
+            let spawned = coin_spawner.replenish_balanced_avoiding_anomalies(
+                &live_positions,
                 self.current_tick,
                 &world.anomalies,
             );
@@ -790,7 +874,8 @@ impl SpatialStepHandler for WorldSpatialEngine {
         }
 
         // Шаг 2c (Фаза 3): Проверка выхода за границы арены (x < 0, x > W, y < 0, y > H)
-        let oob_ids = Self::detect_out_of_bounds(&world.players, self.arena_width, self.arena_height);
+        let oob_ids =
+            Self::detect_out_of_bounds(&world.players, self.arena_width, self.arena_height);
         let oob_set: HashSet<String> = oob_ids.into_iter().collect();
         for player in world.players.values_mut() {
             if player.is_destroyed() {
@@ -823,59 +908,9 @@ impl SpatialStepHandler for WorldSpatialEngine {
             self.respawn_destroyed_carpets(world);
         }
 
-        // Шаг 3: Обновление оглушений для живых игроков / ковров
-        for player in world.players.values_mut() {
-            if player.is_destroyed() {
-                continue;
-            }
-
-            if player.carpets.is_empty() {
-                // Декремент таймера существующего оглушения
-                if player.stun_remaining_ticks > 0 {
-                    player.stun_remaining_ticks -= 1;
-                    if player.stun_remaining_ticks == 0 {
-                        player.status = "normal".to_string();
-                    }
-                } else if player.status == "stunned" {
-                    player.status = "normal".to_string();
-                }
-
-                // Проверка попадания в эпицентр любой активной аномалии
-                let player_pos = Vec2::new(player.position.0, player.position.1);
-                let in_epicenter = world.anomalies.iter().any(|a| {
-                    let a_pos = Vec2::new(a.position.0, a.position.1);
-                    let stun_radius = a.radius * self.stun_radius_ratio;
-                    check_point_in_circle(player_pos, a_pos, stun_radius)
-                });
-
-                if in_epicenter {
-                    player.status = "stunned".to_string();
-                    player.stun_remaining_ticks = self.stun_duration_ticks;
-                }
-            } else {
-                for carpet in player.carpets.values_mut() {
-                    if carpet.is_destroyed() {
-                        continue;
-                    }
-                    carpet.tick_stun();
-
-                    let c_pos = Vec2::new(carpet.position.0, carpet.position.1);
-                    let in_epicenter = world.anomalies.iter().any(|a| {
-                        let a_pos = Vec2::new(a.position.0, a.position.1);
-                        let stun_radius = a.radius * self.stun_radius_ratio;
-                        check_point_in_circle(c_pos, a_pos, stun_radius)
-                    });
-
-                    if in_epicenter {
-                        carpet.apply_stun(self.stun_duration_ticks);
-                    }
-                }
-                player.sync_from_carpets();
-            }
-        }
-
-        // Шаг 4: Сбор сокровищ живыми игроками / коврами
+        // Шаг 3: Сбор сокровищ живыми игроками / коврами
         let mut collected_ids = HashSet::new();
+        let teleported_ids = destroyed_this_tick.iter().cloned().collect::<HashSet<_>>();
 
         for treasure in &mut world.treasures {
             let t_pos = Vec2::new(treasure.position.0, treasure.position.1);
@@ -887,8 +922,17 @@ impl SpatialStepHandler for WorldSpatialEngine {
                     continue;
                 }
                 if player.carpets.is_empty() {
-                    let p_pos = Vec2::new(player.position.0, player.position.1);
-                    let dist_sq = p_pos.distance_squared(t_pos);
+                    let end = Vec2::from_tuple(player.position);
+                    let (start, end) = movement_segments
+                        .get(&player.id)
+                        .copied()
+                        .unwrap_or((end, end));
+                    let start = if teleported_ids.contains(&player.id) {
+                        end
+                    } else {
+                        start
+                    };
+                    let dist_sq = point_segment_distance_squared(t_pos, start, end);
                     if dist_sq <= cap_rad_sq && dist_sq < min_dist_sq {
                         min_dist_sq = dist_sq;
                         closest_player_id = Some(p_id.clone());
@@ -898,8 +942,17 @@ impl SpatialStepHandler for WorldSpatialEngine {
                         if carpet.is_destroyed() {
                             continue;
                         }
-                        let c_pos = Vec2::new(carpet.position.0, carpet.position.1);
-                        let dist_sq = c_pos.distance_squared(t_pos);
+                        let end = Vec2::from_tuple(carpet.position);
+                        let (start, end) = movement_segments
+                            .get(&carpet.id)
+                            .copied()
+                            .unwrap_or((end, end));
+                        let start = if teleported_ids.contains(&carpet.id) {
+                            end
+                        } else {
+                            start
+                        };
+                        let dist_sq = point_segment_distance_squared(t_pos, start, end);
                         if dist_sq <= cap_rad_sq && dist_sq < min_dist_sq {
                             min_dist_sq = dist_sq;
                             closest_player_id = Some(p_id.clone());
@@ -922,8 +975,14 @@ impl SpatialStepHandler for WorldSpatialEngine {
 
         // Шаг 6: Немедленное восполнение пула монет взамен собранных (AC-01 / FR-02)
         if let Some(ref mut coin_spawner) = self.coin_spawner {
-            let spawned = coin_spawner.replenish_avoiding_anomalies(
-                world.treasures.len(),
+            let live_positions = world
+                .treasures
+                .iter()
+                .filter(|treasure| !treasure.is_collected)
+                .map(|treasure| Vec2::new(treasure.position.0, treasure.position.1))
+                .collect::<Vec<_>>();
+            let spawned = coin_spawner.replenish_balanced_avoiding_anomalies(
+                &live_positions,
                 self.current_tick,
                 &world.anomalies,
             );
@@ -939,9 +998,33 @@ impl SpatialStepHandler for WorldSpatialEngine {
             }
         }
 
+        self.previous_positions.clear();
+        for player in world.players.values() {
+            if player.carpets.is_empty() {
+                self.previous_positions
+                    .insert(player.id.clone(), Vec2::from_tuple(player.position));
+            } else {
+                for carpet in player.carpets.values() {
+                    self.previous_positions
+                        .insert(carpet.id.clone(), Vec2::from_tuple(carpet.position));
+                }
+            }
+        }
+
         // Инкремент локального счетчика тика симуляции
         self.current_tick += 1;
     }
+}
+
+fn point_segment_distance_squared(point: Vec2, start: Vec2, end: Vec2) -> f64 {
+    let segment = end - start;
+    let length_squared = segment.length_squared();
+    let fraction = if length_squared <= f64::EPSILON {
+        0.0
+    } else {
+        ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0)
+    };
+    point.distance_squared(start + segment * fraction)
 }
 
 #[cfg(test)]
@@ -988,7 +1071,7 @@ mod tests {
         manager.add_treasure(treasure);
 
         let player_pos = Vec2::new(10.0, 14.0); // расстояние 4.0 <= 5.0
-        let score = manager.resolve_treasure_captures(player_pos, 5.0);
+        let score = manager.resolve_treasure_captures(player_pos, player_pos, 5.0);
 
         assert_eq!(score, 50);
         assert_eq!(manager.treasures.len(), 0); // удалено из пула
@@ -1003,7 +1086,7 @@ mod tests {
         manager.add_treasure(treasure);
 
         let player_pos = Vec2::new(10.0, 16.0); // расстояние 6.0 > 5.0
-        let score = manager.resolve_treasure_captures(player_pos, 5.0);
+        let score = manager.resolve_treasure_captures(player_pos, player_pos, 5.0);
 
         assert_eq!(score, 0);
         assert_eq!(manager.treasures.len(), 1); // осталось в пуле
@@ -1026,7 +1109,8 @@ mod tests {
         manager.add_treasure(Treasure::new("t2", "chest", Vec2::new(12.0, 10.0), 20));
         manager.add_treasure(Treasure::new("t3", "chest", Vec2::new(50.0, 50.0), 100));
 
-        let score = manager.resolve_treasure_captures(Vec2::new(11.0, 10.0), 5.0);
+        let player_pos = Vec2::new(11.0, 10.0);
+        let score = manager.resolve_treasure_captures(player_pos, player_pos, 5.0);
         assert_eq!(score, 50); // 30 + 20
         assert_eq!(manager.treasures.len(), 1);
         assert_eq!(manager.treasures[0].id, "t3");
@@ -1165,5 +1249,21 @@ mod tests {
         assert!(p.is_destroyed());
         assert_eq!(p.status, "destroyed");
         assert_eq!(p.velocity, (0.0, 0.0));
+    }
+
+    #[test]
+    fn respawned_carpet_keeps_incremented_death_count() {
+        let mut engine = WorldSpatialEngine::default().with_carpet_respawn(true);
+        let mut world = WorldData::new();
+        let mut player = PlayerState::new("wall_test".to_string(), 500.0, 500.0, 5.0, 20.0);
+        player.carpets.get_mut("wall_test_0").unwrap().position = (-1.0, 500.0);
+        world.players.insert(player.id.clone(), player);
+
+        engine.resolve(&mut world, 0.2);
+
+        let carpet = &world.players["wall_test"].carpets["wall_test_0"];
+        assert_eq!(carpet.death_count, 1);
+        assert_eq!(carpet.status, "normal");
+        assert!((0.0..=engine.arena_width).contains(&carpet.position.0));
     }
 }

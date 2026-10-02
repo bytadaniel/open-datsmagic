@@ -63,12 +63,24 @@ pub struct CarpetState {
     pub position: (f64, f64),
     /// Вектор текущей скорости (vx, vy)
     pub velocity: (f64, f64),
+    /// Эффективный вектор управляющего ускорения после ограничения и stunned
+    #[serde(default)]
+    pub acceleration: (f64, f64),
     /// Предельное управляющее ускорение
     pub max_acceleration: f64,
     /// Предельная скорость
     pub max_velocity: f64,
     /// Оставшееся число тиков оглушения
     pub stun_remaining_ticks: u32,
+    /// Монотонный счетчик гибелей ковра за время жизни его ID
+    #[serde(default)]
+    pub death_count: u32,
+    /// Текущий личный баланс золота ковра.
+    #[serde(default)]
+    pub gold: u32,
+    /// Суммарный номинал собранных этим ковром монет (не уменьшается при гибели).
+    #[serde(default)]
+    pub gold_collected_total: u64,
 }
 
 impl CarpetState {
@@ -79,9 +91,13 @@ impl CarpetState {
             status: "normal".to_string(),
             position: (pos_x, pos_y),
             velocity: (0.0, 0.0),
+            acceleration: (0.0, 0.0),
             max_acceleration: max_acc,
             max_velocity: max_vel,
             stun_remaining_ticks: 0,
+            death_count: 0,
+            gold: 0,
+            gold_collected_total: 0,
         }
     }
 
@@ -100,8 +116,12 @@ impl CarpetState {
     /// Помечает ковер перманентно уничтоженным и обнуляет скорость
     #[inline]
     pub fn mark_destroyed(&mut self) {
+        if !self.is_destroyed() {
+            self.death_count = self.death_count.saturating_add(1);
+        }
         self.status = "destroyed".to_string();
         self.velocity = (0.0, 0.0);
+        self.acceleration = (0.0, 0.0);
         self.stun_remaining_ticks = 0;
     }
 
@@ -130,6 +150,25 @@ impl CarpetState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::CarpetState;
+
+    #[test]
+    fn carpet_death_count_increments_once_per_life_and_survives_respawn_status_reset() {
+        let mut carpet = CarpetState::new("p_0", 0.0, 0.0, 40.0, 110.0);
+        carpet.mark_destroyed();
+        carpet.mark_destroyed();
+        assert_eq!(carpet.death_count, 1);
+
+        // Same-tick respawn resets status/physics, not the lifetime counter.
+        carpet.status = "normal".into();
+        carpet.position = (100.0, 100.0);
+        carpet.mark_destroyed();
+        assert_eq!(carpet.death_count, 2);
+    }
+}
+
 /// Состояние игрока и его флота из 5 ковров-самолетов (FE-010 / DR-007)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
@@ -137,12 +176,21 @@ pub struct PlayerState {
     pub id: PlayerId,
     /// Набранные очки
     pub score: u32,
+    /// Накопленный за сессию номинал монет, собранных всеми коврами.
+    #[serde(default)]
+    pub gold_collected_total: u64,
+    /// Суммарная длина фактических перемещений ковров команды, без respawn teleport.
+    #[serde(default)]
+    pub distance_travelled: f64,
     /// Статус ("normal", "stunned", "destroyed")
     pub status: String,
     /// Радиус-вектор положения (x, y) первого ковра
     pub position: (f64, f64),
     /// Вектор текущей скорости (vx, vy) первого ковра
     pub velocity: (f64, f64),
+    /// Эффективный вектор управляющего ускорения первого ковра
+    #[serde(default)]
+    pub acceleration: (f64, f64),
     /// Предельное ускорение ковра
     pub max_acceleration: f64,
     /// Предельная скорость ковра
@@ -158,31 +206,27 @@ impl PlayerState {
     /// Создает нового игрока со стандартными характеристиками и флотом из 5 ковров
     pub fn new(id: PlayerId, pos_x: f64, pos_y: f64, max_acc: f64, max_vel: f64) -> Self {
         let mut carpets = HashMap::new();
-        let offsets = [
-            (0.0, 0.0),
-            (-30.0, -30.0),
-            (30.0, -30.0),
-            (-30.0, 30.0),
-            (30.0, 30.0),
-        ];
-        for (i, &(dx, dy)) in offsets.iter().enumerate() {
+        for i in 0..FLEET_CARPETS_COUNT {
+            // Спираль Ферма: компактный флот без прямоугольной решетки.
+            let radius = 18.0 * (i as f64).sqrt();
+            let angle = i as f64 * 2.399_963_229_728_653;
+            let dx = radius * angle.cos();
+            let dy = radius * angle.sin();
             let carpet_id = format!("{}_{}", id, i);
-            let carpet = CarpetState::new(
-                carpet_id.clone(),
-                pos_x + dx,
-                pos_y + dy,
-                max_acc,
-                max_vel,
-            );
+            let carpet =
+                CarpetState::new(carpet_id.clone(), pos_x + dx, pos_y + dy, max_acc, max_vel);
             carpets.insert(carpet_id, carpet);
         }
 
         Self {
             id,
             score: 0,
+            gold_collected_total: 0,
+            distance_travelled: 0.0,
             status: "normal".to_string(),
             position: (pos_x, pos_y),
             velocity: (0.0, 0.0),
+            acceleration: (0.0, 0.0),
             max_acceleration: max_acc,
             max_velocity: max_vel,
             stun_remaining_ticks: 0,
@@ -208,6 +252,7 @@ impl PlayerState {
     pub fn mark_destroyed(&mut self) {
         self.status = "destroyed".to_string();
         self.velocity = (0.0, 0.0);
+        self.acceleration = (0.0, 0.0);
         for carpet in self.carpets.values_mut() {
             carpet.mark_destroyed();
         }
@@ -216,15 +261,21 @@ impl PlayerState {
     /// Синхронизирует базовые атрибуты игрока из основного ковра (индекс 0)
     pub fn sync_from_carpets(&mut self) {
         let c0_id = format!("{}_0", self.id);
-        if let Some(c0) = self.carpets.get(&c0_id).or_else(|| self.carpets.values().next()) {
+        if let Some(c0) = self
+            .carpets
+            .get(&c0_id)
+            .or_else(|| self.carpets.values().next())
+        {
             self.position = c0.position;
             self.velocity = c0.velocity;
+            self.acceleration = c0.acceleration;
             self.status = c0.status.clone();
             self.stun_remaining_ticks = c0.stun_remaining_ticks;
         }
         if !self.carpets.is_empty() && self.carpets.values().all(|c| c.is_destroyed()) {
             self.status = "destroyed".to_string();
             self.velocity = (0.0, 0.0);
+            self.acceleration = (0.0, 0.0);
         }
     }
 
@@ -234,6 +285,7 @@ impl PlayerState {
         if let Some(c0) = self.carpets.get_mut(&c0_id) {
             c0.position = self.position;
             c0.velocity = self.velocity;
+            c0.acceleration = self.acceleration;
             c0.status = self.status.clone();
             c0.stun_remaining_ticks = self.stun_remaining_ticks;
         }

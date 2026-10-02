@@ -453,6 +453,7 @@ impl From<PlayerEntity> for PlayerState {
             status: p.status,
             position: (p.position.x, p.position.y),
             velocity: (p.velocity.x, p.velocity.y),
+            acceleration: (0.0, 0.0),
             max_acceleration: p.max_acceleration,
             max_velocity: p.max_velocity,
             stun_remaining_ticks: p.stun_remaining_ticks,
@@ -478,6 +479,9 @@ pub struct CarpetEntity {
     pub max_velocity: f64,
     /// Оставшиеся тики оглушения
     pub stun_remaining_ticks: u32,
+    /// Монотонный счетчик гибелей ковра
+    #[serde(default)]
+    pub death_count: u32,
 }
 
 impl CarpetEntity {
@@ -491,6 +495,7 @@ impl CarpetEntity {
             max_acceleration: max_acc,
             max_velocity: max_vel,
             stun_remaining_ticks: 0,
+            death_count: 0,
         }
     }
 
@@ -509,6 +514,9 @@ impl CarpetEntity {
     /// Помечает ковер перманентно уничтоженным
     #[inline]
     pub fn mark_destroyed(&mut self) {
+        if !self.is_destroyed() {
+            self.death_count = self.death_count.saturating_add(1);
+        }
         self.status = "destroyed".to_string();
         self.velocity = Vec2::ZERO;
         self.stun_remaining_ticks = 0;
@@ -549,6 +557,7 @@ impl From<&CarpetState> for CarpetEntity {
             max_acceleration: state.max_acceleration,
             max_velocity: state.max_velocity,
             stun_remaining_ticks: state.stun_remaining_ticks,
+            death_count: state.death_count,
         }
     }
 }
@@ -560,9 +569,11 @@ impl From<CarpetEntity> for CarpetState {
             status: c.status,
             position: (c.position.x, c.position.y),
             velocity: (c.velocity.x, c.velocity.y),
+            acceleration: (0.0, 0.0),
             max_acceleration: c.max_acceleration,
             max_velocity: c.max_velocity,
             stun_remaining_ticks: c.stun_remaining_ticks,
+            death_count: c.death_count,
         }
     }
 }

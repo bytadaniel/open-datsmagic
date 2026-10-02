@@ -28,13 +28,35 @@ class HudRenderer:
         fps: float,
         zoom: float,
         follow_mode: bool,
+        selected_carpet_id: Optional[str] = None,
+        show_scan_fan: bool = False,
+        manual_control_error: Optional[str] = None,
+        manual_control_enabled: bool = False,
+        trajectory_fan_step_degrees: float = 6.0,
+        trajectory_fan_max_routes: int = 5,
+        current_forecast=None,
+        fan_forecasts=None,
     ) -> None:
         """Отрисовывает информационную панель поверх игрового поля."""
         # 1. Верхняя левая панель: телеметрия игрока и матча
-        self._draw_player_panel(surface, snapshot)
+        self._draw_player_panel(surface, snapshot, selected_carpet_id)
 
         # 2. Верхняя правая панель: статус сети, FPS и управление
-        self._draw_system_panel(surface, is_connected, fps, zoom, follow_mode)
+        self._draw_system_panel(
+            surface,
+            is_connected,
+            fps,
+            zoom,
+            follow_mode,
+            selected_carpet_id,
+            show_scan_fan,
+            manual_control_error,
+            manual_control_enabled,
+            trajectory_fan_step_degrees,
+            trajectory_fan_max_routes,
+        )
+
+        self._draw_trajectory_scores(surface, current_forecast, fan_forecasts or [])
 
         # 3. Плашка потери связи (FE-005 раздел 5)
         if not is_connected:
@@ -43,13 +65,14 @@ class HudRenderer:
         # 4. Подсказка по горячим клавишам внизу экрана
         self._draw_controls_help(surface)
 
-        # 5. Аварийный баннер уничтожения ковра (FE-008 раздел 4.3)
-        if snapshot and getattr(snapshot.player, "is_destroyed", False):
-            self._draw_destroyed_banner(surface)
+        # Гибель отдельного ковра отражается в составе флота; модальное окно
+        # проигрыша не выводится, так как сервер автоматически респавнит ковер.
 
-    def _draw_player_panel(self, surface: pygame.Surface, snapshot: Optional[WorldSnapshot]) -> None:
+    def _draw_player_panel(
+        self, surface: pygame.Surface, snapshot: Optional[WorldSnapshot], selected_carpet_id: Optional[str]
+    ) -> None:
         panel_w = 270
-        panel_h = 225
+        panel_h = 295
         x = 15
         y = 15
 
@@ -158,6 +181,29 @@ class HudRenderer:
         counts_lbl = self._font_text.render(counts, True, (180, 190, 200))
         surface.blit(counts_lbl, (x + 12, y + 174))
 
+        selected = next((c for c in p.carpets if c.id == selected_carpet_id), None)
+        if selected:
+            header = self._font_bold.render(f"Selected: {selected.id}", True, self.colors.HUD_ACCENT)
+            surface.blit(header, (x + 12, y + 202))
+            status = self._font_text.render(f"Status: {selected.status}", True, self.colors.HUD_TEXT)
+            speed = self._font_text.render(
+                f"V: ({selected.velocity.x:.1f}, {selected.velocity.y:.1f}) | {selected.velocity.length():.1f}",
+                True, self.colors.HUD_TEXT,
+            )
+            own = self._font_text.render(
+                f"S: ({selected.acceleration.x:.1f}, {selected.acceleration.y:.1f}) | {selected.acceleration.length():.1f}",
+                True, self.colors.ACCELERATION_ARROW,
+            )
+            anomaly = selected.anomaly_acceleration
+            env = self._font_text.render(
+                f"W: ({anomaly.x:.1f}, {anomaly.y:.1f}) | {anomaly.length():.1f}",
+                True, self.colors.ANOMALY_ACCELERATION_ARROW,
+            )
+            surface.blit(status, (x + 12, y + 224))
+            surface.blit(speed, (x + 12, y + 244))
+            surface.blit(own, (x + 12, y + 264))
+            surface.blit(env, (x + 12, y + 282))
+
     def _draw_system_panel(
         self,
         surface: pygame.Surface,
@@ -165,9 +211,15 @@ class HudRenderer:
         fps: float,
         zoom: float,
         follow_mode: bool,
+        selected_carpet_id: Optional[str],
+        show_scan_fan: bool,
+        manual_control_error: Optional[str],
+        manual_control_enabled: bool,
+        trajectory_fan_step_degrees: float,
+        trajectory_fan_max_routes: int,
     ) -> None:
-        panel_w = 210
-        panel_h = 100
+        panel_w = 230
+        panel_h = 235
         x = self.config.screen_width - panel_w - 15
         y = 15
 
@@ -192,6 +244,90 @@ class HudRenderer:
         follow_color = self.colors.HUD_ACCENT if follow_mode else (160, 170, 180)
         follow_lbl = self._font_bold.render(follow_str, True, follow_color)
         surface.blit(follow_lbl, (x + 12, y + 76))
+        watch_label = f"Watch: {selected_carpet_id[-12:]}" if selected_carpet_id else "Watch: none"
+        watch = self._font_text.render(watch_label, True, self.colors.HUD_TEXT)
+        if manual_control_error and manual_control_enabled:
+            control_label = "Manual LOCK ERROR"
+            control_color = self.colors.HUD_ALERT
+        elif manual_control_enabled:
+            control_label = "Manual ON | bot paused"
+            control_color = self.colors.HUD_ACCENT
+        else:
+            control_label = "Manual OFF [M]"
+            control_color = self.colors.HUD_TEXT
+        control = self._font_bold.render(control_label, True, control_color)
+        fan = self._font_text.render(f"Trajectory fan [P]: {'ON' if show_scan_fan else 'OFF'}", True, self.colors.HUD_TEXT)
+        surface.blit(watch, (x + 12, y + 98))
+        surface.blit(control, (x + 12, y + 118))
+        surface.blit(fan, (x + 12, y + 138))
+        if manual_control_error and manual_control_enabled:
+            warning = self._font_small.render("Bot may overwrite controls", True, self.colors.HUD_ALERT)
+            surface.blit(warning, (x + 12, y + 155))
+
+        self._draw_slider(surface, x, y + 176, "Scan step", "scan_step", trajectory_fan_step_degrees, 1, 20)
+        self._draw_slider(surface, x, y + 207, "Top routes", "route_count", trajectory_fan_max_routes, 1, 10)
+
+    def _slider_track(self, panel_x: int, row_y: int) -> pygame.Rect:
+        return pygame.Rect(panel_x + 112, row_y + 7, 98, 4)
+
+    def slider_at(self, position: tuple[int, int]) -> Optional[str]:
+        panel_x = self.config.screen_width - 230 - 15
+        for name, row_y in (("scan_step", 15 + 176), ("route_count", 15 + 207)):
+            hit_rect = pygame.Rect(panel_x + 102, row_y - 4, 116, 24)
+            if hit_rect.collidepoint(position):
+                return name
+        return None
+
+    def slider_value_at(self, name: str, mouse_x: int) -> float | int:
+        panel_x = self.config.screen_width - 230 - 15
+        row_y = 15 + (176 if name == "scan_step" else 207)
+        track = self._slider_track(panel_x, row_y)
+        fraction = max(0.0, min(1.0, (mouse_x - track.left) / track.width))
+        if name == "scan_step":
+            return round(1.0 + fraction * 19.0, 1)
+        return max(1, min(10, round(1.0 + fraction * 9.0)))
+
+    def _draw_slider(self, surface, panel_x, row_y, label, name, value, minimum, maximum) -> None:
+        label_surface = self._font_small.render(f"{label}: {value:g}{'°' if name == 'scan_step' else ''}", True, self.colors.HUD_TEXT)
+        surface.blit(label_surface, (panel_x + 12, row_y + 1))
+        track = self._slider_track(panel_x, row_y)
+        pygame.draw.line(surface, (120, 135, 155), track.midleft, track.midright, 3)
+        fraction = (float(value) - minimum) / (maximum - minimum)
+        knob_x = int(track.left + fraction * track.width)
+        pygame.draw.circle(surface, self.colors.HUD_ACCENT, (knob_x, track.centery), 6)
+
+    def _draw_trajectory_scores(self, surface, current_forecast, fan_forecasts) -> None:
+        if current_forecast is None and not fan_forecasts:
+            return
+        rows = []
+        if current_forecast is not None:
+            rows.append(("Current", current_forecast))
+        rows.extend((f"{item.angle_degrees:.1f}°", item) for item in fan_forecasts)
+        rows = rows[:11]
+        row_h = 17
+        panel_w = 385
+        panel_h = 28 + row_h * len(rows)
+        x = 15
+        y = self.config.screen_height - panel_h - 34
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        pygame.draw.rect(panel, self.colors.HUD_BG, (0, 0, panel_w, panel_h), border_radius=7)
+        surface.blit(panel, (x, y))
+        title = self._font_bold.render("Trajectory score / time (points/s)", True, self.colors.HUD_ACCENT)
+        surface.blit(title, (x + 10, y + 6))
+        for index, (label, forecast) in enumerate(rows):
+            if forecast.time_to_last_bounty is None:
+                ratio = "no bounty"
+            else:
+                denominator = max(0.2, forecast.time_to_last_bounty)
+                ratio = (
+                    f"{forecast.route_score:.0f} / {denominator:.1f}s = "
+                    f"{forecast.score_rate:.1f}/s (last {forecast.time_to_last_bounty:.1f}s)"
+                )
+            if forecast.death_time is not None:
+                ratio += f" | death {forecast.death_time:.1f}s"
+            color = self.colors.TRAJECTORY_DEATH if forecast.death_position is not None else self.colors.HUD_TEXT
+            text = self._font_small.render(f"{label}: {ratio}", True, color)
+            surface.blit(text, (x + 10, y + 25 + index * row_h))
 
     def _draw_connection_alert(self, surface: pygame.Surface) -> None:
         """Плашка при разрыве или ожидании соединения (FE-005 раздел 5)."""
@@ -209,7 +345,7 @@ class HudRenderer:
 
     def _draw_controls_help(self, surface: pygame.Surface) -> None:
         """Строка подсказок управления внизу экрана."""
-        help_text = "[Space] Follow Player  |  [+/- / Wheel] Zoom  |  [Arrows / WASD] Pan  |  [R] Reset  |  [Esc] Exit"
+        help_text = "[Click / 1-5] Watch  |  [M] Manual on/off  |  [P] Fan  |  [Space] Follow  |  [Arrows] Pan  |  [+/-] Zoom"
         text_surf = self._font_text.render(help_text, True, (110, 100, 90))
         surface.blit(text_surf, (20, self.config.screen_height - 24))
 
@@ -238,4 +374,3 @@ class HudRenderer:
             (240, 180, 180),
         )
         surface.blit(sub_surf, (bx + (banner_w - sub_surf.get_width()) // 2, by + 54))
-
