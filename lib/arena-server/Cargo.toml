@@ -1,0 +1,23 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+authors = ["DatsMagic Team"]
+description = "Высокопроизводительный сервер симуляции DatsMagic на Rust"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+axum = "0.8.9"
+tower = { version = "0.5.3", features = ["util"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tokio-test = "0.4"
+
+[workspace]

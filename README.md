@@ -1,102 +1,84 @@
-# DatsMagic 🧞‍♂️✨
+# DatsMagic
 
-> Высокопроизводительный пошагово-непрерывный симулятор управления ковром-самолетом и автономный 2D-визуализатор телеметрии.
+DatsMagic — симуляция арены с коврами-самолётами, золотом и аномалиями. Сервер и визуализатор написаны на Rust; Hub управляет аренами, командами, голосованием и лидербордом. Правила проекта ведутся по Docs-First / Spec-Driven Design: исходные спецификации находятся в [`docs/`](docs/).
 
-Проект разработан по методологии **Spec-Driven Design (SDD)**. Корневой [`docs/`](docs/) задает механику игры и API сервера; изолированный клиент ведет собственные спецификации в [`visualizer_2/docs/`](visualizer_2/docs/).
-
----
-
-## Архитектура проекта
-
-Проект организован по принципу монорепозитория со строгим разделением ответственности:
+## Структура
 
 ```text
-datsmagic/
-├── docs/             # [SSOT] Спецификации: mechanics.md, adr/, domain/, features/
-├── server/           # Высокопроизводительный Rust-сервер симулятора (Axum + Tokio)
-├── visualizer_2/     # Основной автономный Rust-визуализатор (egui/glow)
-├── visualizer/       # Legacy Python-клиент (fallback)
-├── scripts/          # Скрипты локального запуска (run_server.sh, run_visualizer.sh)
-├── AGENTS.md         # Руководство и правила Spec-Driven Design для AI-агентов
-├── Cargo.toml        # Корневой манифест Cargo Workspace
-└── README.md         # Документация проекта
+apps/arena-hub/                 Python control plane и веб-приложение
+lib/arena-server/               Rust-симулятор и API одной арены
+lib/arena-visualizer/            Нативный Rust/egui визуализатор
+lib/bot-variants/player_1/       Старая реализация игрока (TypeScript)
+lib/bot-variants/player_2/       Автономный игрок со стратегиями (Rust)
+assets/worlds.json               Каталог профилей миров; число профилей свободное
+docs/                            Единый каталог ADR, домена, фич и документов компонентов
+scripts/                         Поддерживаемые команды запуска
 ```
 
-### Компоненты системы
-
-1. **Rust Симулятор (`server/`)**:
-   - **Engine ([FE-001](docs/features/FE-001-server-runtime-and-game-loop.md))**: Тактовый таймер $\Delta t = 200\text{ ms}$ (5 Hz), буфер команд с защитой от race conditions и rate-limiting.
-   - **Physics ([FE-002](docs/features/FE-002-euler-physics-engine.md))**: 2D векторный интегратор Эйлера, затухание вязкого трения ($k_f = 0.98$), ограничение ускорения ($A_{max}$) и предельной скорости ($V_{max}$).
-   - **Spatial & Collisions ([FE-003](docs/features/FE-003-spatial-entities-and-collisions.md))**: Взаимодействие сущностей, захват сокровищ в радиусе $R_{capture}$, суперпозиция гравитационных аномалий $F_{pull}$, механика оглушения (`stunned`).
-   - **REST API ([FE-015](docs/features/FE-015-legacy-desert-api-compatibility.md))**: Канонический Desert API `POST /play/magcarp/player/move`, авторизация через `X-Auth-Token`.
-
-2. **Rust-визуализатор (`visualizer_2/`)**:
-   - Нативное окно и scene painter на `eframe/egui`, отдельный REST-поток, интерактивное наблюдение, ручное управление, HUD, прогноз маршрутов и регулируемый веер. Спецификация: [`visualizer_2/docs/`](visualizer_2/docs/).
-
----
+Сервер, визуализатор и каждый бот — независимые Cargo-пакеты со своими lock-файлами. Hub — самостоятельное Python-приложение. Графические зависимости визуализатора не попадают в бинарник арены.
 
 ## Быстрый старт
 
-### Требования
-- **Rust**: 1.80+ (`cargo`, `rustc`)
-- **Python**: 3.10+ (рекомендуется 3.12–3.14)
+Нужны Rust toolchain и Python 3.10+. Из корня репозитория:
 
-### 1. Запуск игрового сервера
 ```bash
+# Одна арена, без управления Hub
 ./scripts/run_server.sh
-# Или напрямую через cargo:
-cargo run --bin server
-```
-Сервер будет доступен по адресу `http://127.0.0.1:8080`.
 
-### 2. Запуск визуализатора на Rust
-В отдельном окне терминала выполните:
+# Hub: сайт на :8090 и одна управляемая арена на :8080
+./scripts/run_hub.sh
+
+# Нативная визуализация (токен обязателен)
+./scripts/run_visualizer.sh --url http://127.0.0.1:8080 --token player_2
+```
+
+Откройте Hub на [http://127.0.0.1:8090](http://127.0.0.1:8090). Там доступны регистрация команды, каталог миров, голосование за следующую арену, документация и лидерборд. Голосовать можно зарегистрированным токеном; команда может изменить голос до выбора мира. Арена меняется после 20-минутного запуска с паузой до минутной границы. Для локальной отладки выбор можно закрепить через `HUB_FIXED_WORLD_ID`.
+
+`assets/worlds.json` — источник профилей: там настраиваются размеры карты, флот, респавн, аномалии и квота золота. Hub и сервер читают один каталог; фиксированного количества миров нет. Runtime-данные находятся в `apps/arena-hub/data/`, а локальные токены — в файлах `token.txt`; эти данные не следует публиковать.
+
+## Игроки
+
+Варианты игроков хранятся отдельно от симуляции:
+
 ```bash
-cargo run --manifest-path visualizer_2/Cargo.toml -- --url http://127.0.0.1:8080 --token dev-token
+# Игрок 2: установите/передайте токен, затем выберите стратегии переменными окружения
+cd lib/bot-variants/player_2
+DATS_PLAYER_TOKEN='your-token' DATS_PLAYER_STRATEGY=agile-top1 DATS_MOVEMENT_STRATEGY=survival cargo run --release
 ```
 
-`--token` обязателен. Для более частого/редкого запроса можно задать `--poll-ms 200`.
+Не коммитьте токены. Player 1 содержит прежнюю клиентскую реализацию и её собственный `token.txt`; Player 2 — отдельный Rust-пакет и отдельная логика поведения.
 
-Параметры запуска:
+## Визуализатор
+
+Выбор ковра и ручное управление разделены. Визуализатор получает игровое состояние с арены и лидерборд/миры через Hub:
+
 ```bash
-cargo run --manifest-path visualizer_2/Cargo.toml -- --url http://127.0.0.1:8080 --token dev-token
+./scripts/run_visualizer.sh --url http://127.0.0.1:8080 --hub-url http://127.0.0.1:8090 --token player_2
 ```
 
-#### Управление в визуализаторе:
-- **Клик по ковру / `1`–`5`**: Выбрать ковер для наблюдения.
-- **`M`**: Включить/выключить ручное управление мышью.
-- **`P`**: Показать/скрыть веер прогнозных маршрутов.
-- **`Пробел`**: Включить/выключить слежение камеры за выбранным ковром.
-- **`+` / `-` / Колесо мыши**: Приблизить / отдалить масштаб сцены (Zoom).
-- **Drag / стрелки**: Панорамирование сцены.
-- **`R`**: Сброс камеры и масштаба.
+Справка по клавишам и настройкам: [`docs/components/arena-visualizer/README.md`](docs/components/arena-visualizer/README.md).
 
----
+## Проверки
 
-## Запуск тестов
-
-### Тесты Rust-сервера (Unit & Integration)
 ```bash
-cargo test
+cargo test --manifest-path lib/arena-server/Cargo.toml
+cargo test --manifest-path lib/arena-visualizer/Cargo.toml
+cargo fmt --manifest-path lib/arena-server/Cargo.toml --check
+cargo fmt --manifest-path lib/arena-visualizer/Cargo.toml --check
+cargo clippy --manifest-path lib/arena-server/Cargo.toml --all-targets -- -D warnings
+python3 -m unittest discover -s apps/arena-hub -v
 ```
-Запуск статического анализатора кода:
+
+Player 2 проверяется независимо:
+
 ```bash
-cargo clippy --all-targets -- -D warnings
+cargo test --manifest-path lib/bot-variants/player_2/Cargo.toml
 ```
 
-### Проверка Rust-визуализатора
-```bash
-cargo check --manifest-path visualizer_2/Cargo.toml
-```
+## Документация
 
-Python fallback по-прежнему запускается через `./scripts/run_visualizer.sh`.
-
----
-
-## Спецификации и документация (Docs-First)
-
-В соответствии с правилами в [AGENTS.md](AGENTS.md):
-- [docs/mechanics.md](docs/mechanics.md) — Базовая игровая механика и математические формулы.
-- [docs/adr/](docs/adr/) — Архитектурные решения (ADR-001, ADR-002).
-- [docs/domain/](docs/domain/) и [docs/features/](docs/features/) — игровые правила и серверные фичи.
-- [visualizer_2/docs/](visualizer_2/docs/) — домен, архитектура и фичи Rust-визуализатора.
+- [`docs/mechanics.md`](docs/mechanics.md) — игровая механика и API.
+- [`docs/domain/`](docs/domain/) и [`docs/features/`](docs/features/) — доменные правила и технические спецификации сервера/платформы.
+- [`docs/adr/`](docs/adr/) — архитектурные решения, включая текущую [структуру репозитория](docs/adr/ADR-003-repository-layout.md).
+- [`docs/components/`](docs/components/) — спецификации Hub, визуализатора и автономного игрока.
+- [`AGENTS.md`](AGENTS.md) — обязательный процесс изменения проекта.

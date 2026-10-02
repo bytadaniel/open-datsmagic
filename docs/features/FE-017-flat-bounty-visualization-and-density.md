@@ -22,7 +22,7 @@ related_test_cases: [TC-COIN-DENSITY-01, TC-VIS-FLAT-COIN-01]
 
 - Квота мира `bounty_quota` и генератора устанавливается в 1000 монет.
 - Координаты каждой монеты выбираются случайно по всей доступной площади арены `[margin, width-margin] × [margin, height-margin]`; при сборе пул пополняется до полной квоты.
-- Клиентское представление bounties определено в `visualizer_2/docs/features/FE-002-world-rendering.md`.
+- Клиентское представление bounties определено в `docs/components/arena-visualizer/features/FE-002-world-rendering.md`.
 
 ## 3. Критерии приемки
 

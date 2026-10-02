@@ -192,10 +192,10 @@ pub struct PlayerDto {
 
 ## 6. План реализации
 
-- [x] **Шаг 1:** Обновить структуру `AnomalyDto` в `server/src/api/dto.rs`, добавив поля `type`, `core_radius`, `velocity`.
-- [x] **Шаг 2:** Обновить логику маппинга состояния игры в DTO в `server/src/api/handlers.rs`.
+- [x] **Шаг 1:** Обновить структуру `AnomalyDto` в `lib/arena-server/src/api/dto.rs`, добавив поля `type`, `core_radius`, `velocity`.
+- [x] **Шаг 2:** Обновить логику маппинга состояния игры в DTO в `lib/arena-server/src/api/handlers.rs`.
 - [x] **Шаг 3:** Добавить валидацию статуса `destroyed` в `POST /api/carpet/command` для блокировки управляющих команд погибшего ковра.
-- [x] **Шаг 4:** Обновить интеграционные тесты API в `server/tests/api_tests.rs` с проверкой корректности сериализации новых полей.
+- [x] **Шаг 4:** Обновить интеграционные тесты API в `lib/arena-server/tests/api_tests.rs` с проверкой корректности сериализации новых полей.
 
 ---
 

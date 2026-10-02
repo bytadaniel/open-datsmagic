@@ -26,7 +26,7 @@ related_test_cases:
 
 ## 1. Контекст и бизнес-цель
 
-Согласно [`DR-007`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-007-player.md), каждый игрок управляет не одним ковром, а флотом из 5 ковров одновременно. Игровой агент должен иметь возможность на каждом такте симуляции передавать раздельные векторы управляющего ускорения $\vec{A}_i$ для каждого из своих ковров.
+Согласно [`DR-007`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-007-player.md), игрок обычно управляет флотом из 5 ковров; профиль мира может задать от 1 до 10. Игровой агент должен иметь возможность на каждом такте симуляции передавать раздельные векторы управляющего ускорения $\vec{A}_i$ для каждого из своих ковров.
 
 Цель фичи — расширить модель данных игрока на сервере до флота из 5 ковров, обновить сетевые DTO и реализовать пакетную обработку команд в `InputCommandBuffer` и `WorldPhysicsEngine`.
 
@@ -116,14 +116,14 @@ sequenceDiagram
 
 ## 3. План реализации
 
-1. **Обновление `PlayerState` и структур ковра в `server/src/engine/state.rs`**:
+1. **Обновление `PlayerState` и структур ковра в `lib/arena-server/src/engine/state.rs`**:
    - Выделение отдельной сущности `CarpetState` с позицией, скоростью, ускорением и статусом.
    - `PlayerState` хранит `id: String`, `score: i64`, `carpets: HashMap<String, CarpetState>`.
-2. **Обновление `server/src/engine/command_buffer.rs`**:
+2. **Обновление `lib/arena-server/src/engine/command_buffer.rs`**:
    - Поддержка хранения команд по ключу `carpet_id`.
 3. **Обновление `WorldPhysicsEngine`**:
    - Итерация по всем коврам всех игроков для расчета Эйлера и суперпозиции внешних сил.
-4. **Обновление DTO в `server/src/api/dto.rs` и обработчиков в `handlers.rs`**.
+4. **Обновление DTO в `lib/arena-server/src/api/dto.rs` и обработчиков в `handlers.rs`**.
 
 ---
 

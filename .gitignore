@@ -2,8 +2,10 @@
 target/
 **/*.rs.bk
 *.pdb
-players/player_2/manual_control*.json
-players/player_2/manual_control*.json.*.tmp
+lib/bot-variants/player_2/manual_control*.json
+lib/bot-variants/player_2/manual_control*.json.*.tmp
+lib/bot-variants/player_2/token.txt
+lib/bot-variants/player_1/node_modules/
 
 # Python virtual environment and cache
 __pycache__/
@@ -20,13 +22,16 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
 var/
 wheels/
 *.egg-info/
+apps/arena-hub/data/
+arena_hub/data/
+current_world.json
+leaderboard.json
 .installed.cfg
 *.egg
 .pytest_cache/

@@ -43,7 +43,7 @@ tags:
   - Покрывать каждую подсистему изолированными юнит-тестами.
 
 ### 2.3. Архитектурная изоляция подсистемы визуализации: Rust + REST API
-- **Предписание**: Основной быстрый клиент визуализации реализовать отдельным приложением на **Rust** в `/visualizer_2`.
+- **Предписание**: Основной быстрый клиент визуализации реализовать отдельным приложением на **Rust** в `/lib/arena-visualizer`.
 - **Связанность**: Запретить прямую интеграцию рендерера в бинарник сервера. Взаимодействие осуществлять исключительно по сети через единственный публичный REST API сервера (`POST /play/magcarp/player/move`); маршруты `/api/*` не поддерживаются.
 - **Назначение**: Клиент визуализации выполняет функции телеметрии, инспекции состояния мира и отладки поведения сущностей.
 
@@ -67,7 +67,7 @@ tags:
 3. Визуализатор может запускаться, перезапускаться и модифицироваться независимо от игрового сервера.
 
 ### Отрицательные и риски:
-1. Необходимость поддержания строгой синхронизации DTO и контрактов API между Rust-сервером и клиентом `visualizer_2`.
+1. Необходимость поддержания строгой синхронизации DTO и контрактов API между Rust-сервером и клиентом `lib/arena-visualizer`.
 2. Повышенная ответственность AI-агента за корректность работы с `borrow checker` и потоками в Rust.
 
 ---
@@ -79,6 +79,6 @@ tags:
   - [`docs/domain/DR-001-game-loop-and-state.md`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-001-game-loop-and-state.md)
   - [`docs/domain/DR-002-vector-physics.md`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-002-vector-physics.md)
   - [`docs/domain/DR-003-entity-interactions-and-collisions.md`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-003-entity-interactions-and-collisions.md)
-  - [`visualizer_2/docs/domain/DR-001-observation-and-visualization.md`](../../visualizer_2/docs/domain/DR-001-observation-and-visualization.md)
+  - [`docs/components/arena-visualizer/domain/DR-001-observation-and-visualization.md`](../../docs/components/arena-visualizer/domain/DR-001-observation-and-visualization.md)
 - Спецификации технических решений (Features):
   - [`docs/features/`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/features)

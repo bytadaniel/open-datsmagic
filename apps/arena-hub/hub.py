@@ -1,0 +1,880 @@
+#!/usr/bin/env python3
+"""DatsMagic control plane: arena lifecycle, private team registry and aggregated results."""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import html
+import json
+import math
+import os
+import random
+import re
+import signal
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+
+ROOT = Path(__file__).resolve().parents[2]
+HUB_DIR = Path(__file__).resolve().parent
+DOCS_DIR = ROOT / "docs" / "components" / "arena-hub"
+DATA_DIR = Path(os.environ.get("HUB_DATA_DIR", HUB_DIR / "data")).resolve()
+ARENA_DATA_DIR = DATA_DIR / "arena"
+REGISTRY_PATH = DATA_DIR / "registry.json"
+DB_PATH = DATA_DIR / "hub.sqlite3"
+WORLDS_PATH = Path(os.environ.get("DATS_WORLDS_PATH", ROOT / "assets/worlds.json"))
+ARENA_BIN = Path(os.environ.get("DATS_ARENA_BIN", ROOT / "lib/arena-server/target/release/server"))
+HUB_HOST = os.environ.get("HUB_HOST", "127.0.0.1")
+HUB_PORT = int(os.environ.get("HUB_PORT", "8090"))
+ARENA_HOST = os.environ.get("ARENA_HOST", "127.0.0.1")
+ARENA_PORT = int(os.environ.get("ARENA_PORT", "8080"))
+ARENA_PUBLIC_HOST = os.environ.get("ARENA_PUBLIC_HOST", "127.0.0.1")
+RUN_SECONDS = int(os.environ.get("HUB_RUN_SECONDS", "1200"))
+POLL_SECONDS = float(os.environ.get("HUB_POLL_SECONDS", "1"))
+FIXED_WORLD_ID = os.environ.get("HUB_FIXED_WORLD_ID")
+METRICS_FIELDS = ("gold", "gold_collected", "carpets_lost", "distance_travelled")
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def token_id(token: str) -> str:
+    value = 0xCBF29CE484222325
+    for byte in token.encode("utf-8"):
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def next_minute_boundary(timestamp: float) -> float:
+    return math.ceil(timestamp / 60.0) * 60.0
+
+
+def load_world_catalog(path: Path = WORLDS_PATH) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    worlds = data.get("worlds")
+    if not isinstance(worlds, list) or not worlds:
+        raise RuntimeError(f"{path} must contain at least one world")
+    ids = [world.get("id") for world in worlds if isinstance(world, dict)]
+    if len(ids) != len(worlds) or any(not isinstance(value, str) or not value.strip() for value in ids):
+        raise RuntimeError("worlds must have non-empty string IDs")
+    if len(set(ids)) != len(worlds):
+        raise RuntimeError("world IDs must be unique")
+    return worlds
+
+
+def load_world_configs(world_catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    env = os.environ.copy()
+    env["DATS_WORLDS_PATH"] = str(WORLDS_PATH)
+    result = subprocess.run(
+        [str(ARENA_BIN), "--world-catalog-json"], cwd=ROOT, env=env,
+        check=True, capture_output=True, text=True, timeout=20,
+    )
+    worlds = json.loads(result.stdout)
+    if not isinstance(worlds, list) or len(worlds) != len(world_catalog):
+        raise RuntimeError("server returned an invalid world configuration catalog")
+    if [world.get("id") for world in worlds] != [world.get("id") for world in world_catalog]:
+        raise RuntimeError("server world configurations do not match worlds.json")
+    return worlds
+
+
+class TeamRegistry:
+    """Private token/name file. Public responses only contain the stable token fingerprint."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.RLock()
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            self.path.parent.chmod(0o700)
+            if self.path.exists():
+                self.path.chmod(0o600)
+        self.teams: dict[str, dict[str, str]] = {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            for record in raw.get("teams", []):
+                token = str(record.get("token", ""))
+                name = str(record.get("name", ""))
+                if token and name:
+                    self.teams[token_id(token)] = {"token": token, "name": name}
+        except FileNotFoundError:
+            self._save_locked()
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+            raise RuntimeError(f"private team registry is unreadable: {path}")
+
+    def _save_locked(self) -> None:
+        records = [
+            {"team_id": key, "token": value["token"], "name": value["name"]}
+            for key, value in sorted(self.teams.items())
+        ]
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps({"version": 1, "teams": records}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        os.replace(temporary, self.path)
+
+    def register(self, token: str, name: str) -> dict[str, str]:
+        token = token.strip()
+        name = name.strip()
+        if not 1 <= len(token) <= 128 or any(ord(ch) < 32 for ch in token):
+            raise ValueError("token must be 1–128 printable characters")
+        if not 1 <= len(name) <= 48 or any(ord(ch) < 32 for ch in name):
+            raise ValueError("name must be 1–48 printable characters")
+        key = token_id(token)
+        with self.lock:
+            existing = self.teams.get(key)
+            if existing and existing["token"] != token:
+                raise ValueError("token fingerprint collision; choose another token")
+            self.teams[key] = {"token": token, "name": name}
+            self._save_locked()
+        return {"team_id": key, "name": name}
+
+    def names(self) -> dict[str, str]:
+        with self.lock:
+            return {key: team["name"] for key, team in self.teams.items()}
+
+    def resolve_token(self, token: str) -> str | None:
+        key = token_id(token.strip())
+        with self.lock:
+            team = self.teams.get(key)
+            return key if team is not None and team["token"] == token.strip() else None
+
+
+class Store:
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        if os.name != "nt" and path.exists():
+            path.chmod(0o600)
+        self.db.row_factory = sqlite3.Row
+        self.lock = threading.RLock()
+        with self.lock:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY,
+                    world_number INTEGER NOT NULL,
+                    world_id TEXT NOT NULL,
+                    world_name TEXT NOT NULL,
+                    world_occurrence INTEGER NOT NULL DEFAULT 1,
+                    run_number INTEGER NOT NULL DEFAULT 1,
+                    arena_name TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    status TEXT NOT NULL,
+                    error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS run_team_stats (
+                    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    team_id TEXT NOT NULL,
+                    fallback_name TEXT NOT NULL,
+                    gold INTEGER NOT NULL,
+                    gold_collected INTEGER NOT NULL,
+                    carpets_lost INTEGER NOT NULL,
+                    distance_travelled REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY(run_id, team_id)
+                );
+                CREATE INDEX IF NOT EXISTS run_stats_team ON run_team_stats(team_id);
+                """
+            )
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
+            if "world_id" not in columns:
+                self.db.execute("PRAGMA foreign_keys=OFF")
+                self.db.executescript(
+                    """
+                    CREATE TABLE runs_new (
+                        id TEXT PRIMARY KEY, world_number INTEGER NOT NULL,
+                        world_id TEXT NOT NULL, world_name TEXT NOT NULL,
+                        world_occurrence INTEGER NOT NULL DEFAULT 1,
+                        run_number INTEGER NOT NULL DEFAULT 1,
+                        arena_name TEXT NOT NULL, port INTEGER NOT NULL,
+                        started_at REAL NOT NULL, ended_at REAL, status TEXT NOT NULL, error TEXT
+                    );
+                    """
+                )
+                old_columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
+                occurrence = "seed_occurrence" if "seed_occurrence" in old_columns else "1"
+                run_number = "run_number" if "run_number" in old_columns else "rowid"
+                self.db.execute(
+                    f"""INSERT INTO runs_new
+                    (id, world_number, world_id, world_name, world_occurrence, run_number,
+                     arena_name, port, started_at, ended_at, status, error)
+                    SELECT id, world_number, 'legacy-world-' || world_number,
+                     'Мир ' || world_number, {occurrence}, {run_number},
+                     'world_legacy_' || world_number || '_' || {occurrence} || '_' || {run_number},
+                     port, started_at, ended_at, status, error FROM runs"""
+                )
+                self.db.executescript(
+                    "DROP TABLE runs; ALTER TABLE runs_new RENAME TO runs; PRAGMA foreign_keys=ON;"
+                )
+            self.db.execute("CREATE INDEX IF NOT EXISTS runs_world_started ON runs(world_number, started_at DESC)")
+            self.db.execute("CREATE INDEX IF NOT EXISTS runs_world_id ON runs(world_id, started_at DESC)")
+
+    def start_run(self, world: dict[str, Any], port: int) -> tuple[str, str]:
+        run_id = uuid.uuid4().hex
+        with self.lock, self.db:
+            run_number = self.db.execute("SELECT count(*) + 1 FROM runs").fetchone()[0]
+            world_number = int(world["world_number"])
+            world_id = str(world["id"])
+            world_name = str(world["name"])
+            world_occurrence = self.db.execute(
+                "SELECT count(*) + 1 FROM runs WHERE world_id=?", (world_id,)
+            ).fetchone()[0]
+            arena_name = f"world_{world_id}_{world_occurrence}_{run_number}"
+            self.db.execute(
+                """INSERT INTO runs
+                (id, world_number, world_id, world_name, world_occurrence, run_number, arena_name,
+                 port, started_at, ended_at, status, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'starting', NULL)""",
+                (run_id, world_number, world_id, world_name, world_occurrence, run_number, arena_name, port, time.time()),
+            )
+        return run_id, arena_name
+
+    def set_run(self, run_id: str, status: str, error: str | None = None) -> None:
+        ended_at = time.time() if status in {"complete", "failed", "interrupted"} else None
+        with self.lock, self.db:
+            self.db.execute("UPDATE runs SET status=?, ended_at=COALESCE(?, ended_at), error=? WHERE id=?", (status, ended_at, error, run_id))
+
+    def ingest(self, run_id: str, entries: list[dict[str, Any]], names: dict[str, str]) -> None:
+        now = time.time()
+        rows = []
+        for entry in entries:
+            team_id = str(entry.get("team_id", ""))
+            if not re.fullmatch(r"[0-9a-f]{16}", team_id):
+                continue
+            fallback = str(entry.get("team", f"Team-{team_id[:6]}"))[:48]
+            rows.append((
+                run_id,
+                team_id,
+                fallback,
+                max(0, int(entry.get("gold", 0))),
+                max(0, int(entry.get("gold_collected", 0))),
+                max(0, int(entry.get("carpets_lost", 0))),
+                max(0.0, float(entry.get("distance_travelled", 0.0))),
+                now,
+            ))
+        with self.lock, self.db:
+            self.db.executemany(
+                """INSERT INTO run_team_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, team_id) DO UPDATE SET fallback_name=excluded.fallback_name,
+                gold=excluded.gold, gold_collected=excluded.gold_collected, carpets_lost=excluded.carpets_lost,
+                distance_travelled=excluded.distance_travelled, updated_at=excluded.updated_at""",
+                rows,
+            )
+
+    @staticmethod
+    def _run_json(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["started_at"] = dt.datetime.fromtimestamp(value["started_at"], dt.timezone.utc).isoformat(timespec="seconds")
+        if value["ended_at"] is not None:
+            value["ended_at"] = dt.datetime.fromtimestamp(value["ended_at"], dt.timezone.utc).isoformat(timespec="seconds")
+        return value
+
+    def runs(
+        self, world_number: int | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        with self.lock:
+            if world_number is None:
+                total = self.db.execute("SELECT count(*) FROM runs").fetchone()[0]
+                rows = self.db.execute(
+                    "SELECT * FROM runs ORDER BY run_number DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+            else:
+                total = self.db.execute(
+                    "SELECT count(*) FROM runs WHERE world_number=?", (world_number,)
+                ).fetchone()[0]
+                rows = self.db.execute(
+                    "SELECT * FROM runs WHERE world_number=? ORDER BY run_number DESC LIMIT ? OFFSET ?",
+                    (world_number, limit, offset),
+                ).fetchall()
+        return {
+            "runs": [self._run_json(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def leaderboard(self, scope: str, registry_names: dict[str, str], world_number: int | None = None, run_id: str | None = None) -> dict[str, Any]:
+        with self.lock:
+            if scope == "run":
+                if not run_id:
+                    raise ValueError("run_id is required for scope=run")
+                run_row = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+                if run_row is None:
+                    raise KeyError("run not found")
+                raw_rows = self.db.execute(
+                    "SELECT * FROM run_team_stats WHERE run_id=?", (run_id,)
+                ).fetchall()
+                teams = []
+                for row in raw_rows:
+                    data = {field: row[field] for field in METRICS_FIELDS}
+                    teams.append({"team_id": row["team_id"], "name": registry_names.get(row["team_id"], row["fallback_name"]), **data})
+                teams.sort(key=lambda item: (-item["gold_collected"], -item["gold"], item["name"].casefold()))
+                for rank, item in enumerate(teams, 1):
+                    item["rank"] = rank
+                return {"scope": scope, "run": self._run_json(run_row), "teams": teams}
+            if scope == "world":
+                if world_number is None or world_number < 1:
+                    raise ValueError("world must be a positive ordinal")
+                raw_rows = self.db.execute(
+                    "SELECT r.id AS run_id, r.world_number, r.world_id, r.world_name, r.arena_name, r.started_at, r.status AS run_status, s.* FROM runs r JOIN run_team_stats s ON s.run_id=r.id WHERE r.world_number=? ORDER BY r.started_at",
+                    (world_number,),
+                ).fetchall()
+            elif scope == "all":
+                raw_rows = self.db.execute(
+                    "SELECT r.id AS run_id, r.world_number, r.world_id, r.world_name, r.arena_name, r.started_at, r.status AS run_status, s.* FROM runs r JOIN run_team_stats s ON s.run_id=r.id ORDER BY r.started_at",
+                ).fetchall()
+            else:
+                raise ValueError("scope must be run, world, or all")
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in raw_rows:
+            grouped.setdefault(row["team_id"], []).append(row)
+        teams = []
+        for team_id, attempts in grouped.items():
+            best = max(attempts, key=lambda row: (row["gold_collected"], row["gold"], -row["started_at"]))
+            total = {field: sum(row[field] for row in attempts) for field in METRICS_FIELDS}
+            top = {field: best[field] for field in METRICS_FIELDS}
+            teams.append({
+                "team_id": team_id,
+                "name": registry_names.get(team_id, best["fallback_name"]),
+                "attempts": len(attempts),
+                "top": top,
+                "total": total,
+                "best_run": {"run_id": best["run_id"], "world_number": best["world_number"], "world_id": best["world_id"], "world_name": best["world_name"], "started_at": dt.datetime.fromtimestamp(best["started_at"], dt.timezone.utc).isoformat(timespec="seconds")},
+            })
+        teams.sort(key=lambda item: (-item["total"]["gold_collected"], -item["total"]["gold"], item["name"].casefold()))
+        for rank, item in enumerate(teams, 1):
+            item["rank"] = rank
+        return {"scope": scope, "world_number": world_number, "teams": teams}
+
+    def counts(self) -> dict[str, int]:
+        with self.lock:
+            return {
+                "runs": self.db.execute("SELECT count(*) FROM runs").fetchone()[0],
+                "teams": self.db.execute("SELECT count(DISTINCT team_id) FROM run_team_stats").fetchone()[0],
+            }
+
+
+class HubState:
+    def __init__(self, world_configs: list[dict[str, Any]]):
+        DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ARENA_DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            DATA_DIR.chmod(0o700)
+            ARENA_DATA_DIR.chmod(0o700)
+        self.world_configs = world_configs
+        self.registry = TeamRegistry(REGISTRY_PATH)
+        self.store = Store(DB_PATH)
+        self.lock = threading.RLock()
+        self.votes: dict[str, str] = {}
+        self.arena: dict[str, Any] = {
+            "status": "starting", "world_number": None, "world_id": None, "world_name": None,
+            "arena_name": None, "port": ARENA_PORT, "run_id": None,
+            "started_at": None, "ends_at": None, "next_start_at": None,
+            "pid": None, "error": None,
+        }
+
+    def set_arena(self, **values: Any) -> None:
+        with self.lock:
+            self.arena.update(values)
+
+    def set_vote(self, team_id: str, world_id: str) -> dict[str, Any]:
+        if not any(world["id"] == world_id for world in self.world_configs):
+            raise ValueError("world_id is not present in worlds.json")
+        with self.lock:
+            if self.arena.get("run_id") is None:
+                raise ValueError("the first arena is starting; vote after it becomes active")
+            self.votes[team_id] = world_id
+            return self.vote_results_locked()
+
+    def vote_results_locked(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for world_id in self.votes.values():
+            counts[world_id] = counts.get(world_id, 0) + 1
+        return counts
+
+    def vote_results(self) -> dict[str, int]:
+        with self.lock:
+            return self.vote_results_locked()
+
+    def consume_vote_winner(self) -> str | None:
+        with self.lock:
+            counts = self.vote_results_locked()
+            self.votes.clear()
+        if not counts:
+            return None
+        highest = max(counts.values())
+        tied = [world_id for world_id, count in counts.items() if count == highest]
+        return random.SystemRandom().choice(tied)
+
+    def current_arena(self) -> dict[str, Any]:
+        with self.lock:
+            result = dict(self.arena)
+        if result["world_number"] is not None:
+            result["url"] = f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}"
+            result["seconds_remaining"] = max(0, int((result.get("ends_at") or time.time()) - time.time()))
+        return result
+
+
+def pick_world(
+    worlds: list[dict[str, Any]], previous_id: str | None, voted_world_id: str | None = None
+) -> dict[str, Any]:
+    if FIXED_WORLD_ID:
+        world = next((item for item in worlds if item["id"] == FIXED_WORLD_ID), None)
+        if world is None:
+            raise RuntimeError("HUB_FIXED_WORLD_ID is not present in worlds.json")
+        return world
+    if voted_world_id:
+        world = next((item for item in worlds if item["id"] == voted_world_id), None)
+        if world is not None:
+            return world
+    candidates = [world for world in worlds if world["id"] != previous_id] if previous_id else worlds
+    if not candidates:
+        candidates = worlds
+    return random.SystemRandom().choice(candidates)
+
+
+def read_report(path: Path) -> list[dict[str, Any]] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("teams", [])
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return None
+
+
+async def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.send_signal(signal.SIGINT if os.name != "nt" else signal.SIGTERM)
+        await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=10)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        process.kill()
+        await asyncio.to_thread(process.wait)
+
+
+async def run_arena_loop(state: HubState) -> None:
+    previous_world_id: str | None = None
+    while True:
+        voted_world_id = state.consume_vote_winner()
+        world = pick_world(state.world_configs, previous_world_id, voted_world_id)
+        previous_world_id = world["id"]
+        world_number = world["world_number"]
+        world_id = world["id"]
+        run_id, arena_name = state.store.start_run(world, ARENA_PORT)
+        run_dir = ARENA_DATA_DIR / f"run_{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        report_path = run_dir / "metrics.json"
+        status_path = DATA_DIR / "current_world.json"
+        log_path = ARENA_DATA_DIR / "arena.log"
+        start_epoch = time.time()
+        ends_epoch = start_epoch + RUN_SECONDS
+        state.set_arena(
+            status="starting", world_number=world_number, world_id=world_id, world_name=world["name"],
+            arena_name=arena_name, port=ARENA_PORT, run_id=run_id,
+            started_at=start_epoch, ends_at=ends_epoch, next_start_at=None,
+            pid=None, error=None,
+        )
+        env = os.environ.copy()
+        env.update({
+            "HOST": ARENA_HOST,
+            "PORT": str(ARENA_PORT),
+            "DATS_WORLD_ID": str(world_id),
+            "DATS_WORLD_RUN_NAME": arena_name,
+            "DATS_WORLDS_PATH": str(WORLDS_PATH),
+            "DATS_TOKEN_REGISTRY_PATH": str(REGISTRY_PATH),
+            "DATS_LEADERBOARD_PATH": str(report_path),
+            "DATS_WORLD_STATUS_PATH": str(status_path),
+        })
+        process: subprocess.Popen[bytes] | None = None
+        planned_stop = False
+        error: str | None = None
+        try:
+            with log_path.open("ab") as log:
+                log.write(f"\n=== {utc_now()} start {arena_name} world={world_id} run={run_id} ===\n".encode())
+                log.flush()
+                process = subprocess.Popen(
+                    [str(ARENA_BIN)], cwd=ROOT, env=env,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=(os.name != "nt"),
+                )
+                state.store.set_run(run_id, "running")
+                state.set_arena(status="running", pid=process.pid)
+                while time.time() < ends_epoch:
+                    if process.poll() is not None:
+                        error = f"arena exited early with code {process.returncode}"
+                        break
+                    report = read_report(report_path)
+                    if report is not None:
+                        state.store.ingest(run_id, report, state.registry.names())
+                    await asyncio.sleep(min(POLL_SECONDS, max(0.05, ends_epoch - time.time())))
+                if process.poll() is None:
+                    planned_stop = True
+                    state.set_arena(status="stopping")
+                    await stop_process(process)
+                final_report = read_report(report_path)
+                if final_report is not None:
+                    state.store.ingest(run_id, final_report, state.registry.names())
+                log.write(f"=== {utc_now()} stop {arena_name} code={process.returncode} ===\n".encode())
+                log.flush()
+        except FileNotFoundError:
+            error = f"arena binary not found: {ARENA_BIN}; run scripts/run_hub.sh to build it"
+        except asyncio.CancelledError:
+            if process is not None:
+                await stop_process(process)
+            state.store.set_run(run_id, "interrupted", "control plane stopped")
+            state.set_arena(status="stopped", pid=None)
+            raise
+        except Exception as exc:  # keep supervisor alive and make the failure visible
+            error = f"{type(exc).__name__}: {exc}"
+            if process is not None:
+                await stop_process(process)
+
+        status = "complete" if planned_stop else "failed"
+        state.store.set_run(run_id, status, error)
+        previous_world_id = world_id
+        next_start = next_minute_boundary(time.time())
+        state.set_arena(
+            status="cooldown", pid=None, error=error,
+            ended_at=time.time(), next_start_at=next_start,
+        )
+        await asyncio.sleep(max(0, next_start - time.time()))
+
+
+def esc(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def markdown_html(source: str) -> str:
+    output: list[str] = []
+    in_code = False
+    in_list = False
+    in_table = False
+    for line in source.splitlines():
+        if line.strip().startswith("```"):
+            if in_list:
+                output.append("</ul>")
+                in_list = False
+            if in_table:
+                output.append("</pre>")
+                in_table = False
+            output.append("<pre><code>" if not in_code else "</code></pre>")
+            in_code = not in_code
+            continue
+        if in_code:
+            output.append(esc(line) + "\n")
+            continue
+        if line.startswith("|"):
+            if in_list:
+                output.append("</ul>")
+                in_list = False
+            if not in_table:
+                output.append('<pre class="table">')
+                in_table = True
+            output.append(esc(line) + "\n")
+            continue
+        if in_table:
+            output.append("</pre>")
+            in_table = False
+        if line.startswith("- "):
+            if not in_list:
+                output.append("<ul>")
+                in_list = True
+            output.append(f"<li>{esc(line[2:])}</li>")
+        else:
+            if in_list:
+                output.append("</ul>")
+                in_list = False
+            if line.startswith("### "):
+                output.append(f"<h3>{esc(line[4:])}</h3>")
+            elif line.startswith("## "):
+                output.append(f"<h2>{esc(line[3:])}</h2>")
+            elif line.startswith("# "):
+                output.append(f"<h1>{esc(line[2:])}</h1>")
+            elif line.strip():
+                output.append(f"<p>{esc(line)}</p>")
+    if in_list:
+        output.append("</ul>")
+    if in_table:
+        output.append("</pre>")
+    if in_code:
+        output.append("</code></pre>")
+    return "\n".join(output)
+
+
+STYLE = '<link rel="stylesheet" href="/static/hub.css">'
+
+
+def page(title: str, body: str) -> bytes:
+    nav = '<header><strong>DatsMagic</strong><a href="/">Обзор</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
+    footer = '<footer class=site-footer>DatsMagic · Мир меняется. Команды остаются.</footer>'
+    return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main>{body}</main>{footer}</body></html>").encode("utf-8")
+
+
+def home_html(state: HubState) -> bytes:
+    arena = state.current_arena()
+    body = """
+    <section class="card hero"><span class=eyebrow><i class=live-dot></i>Живая арена</span><h1>Здесь решается,<br>какой мир будет дальше.</h1><p>Следи за матчами, выбирай следующий мир голосом команды и смотри, кто лучше справился с хаосом.</p><div class=hero-actions><a class=button href="/worlds">Выбрать следующий мир <span aria-hidden=true>↗</span></a><a class="button secondary" href="/leaderboard">Смотреть рейтинг</a></div>
+      <div class=metrics><div class=metric><small>Сейчас играют</small><strong id=home-world>__WORLD_NAME__</strong></div><div class=metric><small>Запуск</small><strong id=home-run>__ARENA_NAME__</strong></div><div class=metric><small>Статус</small><strong id=home-status>__ARENA_STATUS__</strong></div><div class=metric><small>До смены мира</small><strong id=home-countdown>__COUNTDOWN__ сек.</strong></div></div>
+      <p><a id=home-arena-link class="button secondary" href="__ARENA_URL__">Открыть API арены</a> <span id=home-updated class=muted>обновление состояния каждые 5 секунд</span></p>
+    </section>
+    <section class=grid><a class="card quick-link" href="/worlds"><span class=eyebrow>01 · Участвуй</span><h2>Голосуй за мир</h2><p>Один голос от команды. Меняй решение до старта следующей арены.</p><span class=status>Открыть каталог →</span></a><a class="card quick-link" href="/leaderboard"><span class=eyebrow>02 · Сравнивай</span><h2>Следи за командами</h2><p>Результаты активного запуска, отдельные арены и сводные итоги.</p><span class=status>Открыть лидерборд →</span></a><a class="card quick-link" href="/register"><span class=eyebrow>03 · Представься</span><h2>Имя команды</h2><p>Зарегистрируй токен и выбери имя, которое увидят остальные.</p><span class=status>Настроить команду →</span></a></section>
+    <script>async function refreshHome(){try{const d=await(await fetch('/api/worlds')).json(),a=d.active||{};document.querySelector('#home-world').textContent=a.world_name||'Подготовка арены';document.querySelector('#home-run').textContent=a.arena_name||'Ожидание';document.querySelector('#home-status').textContent=a.status||'starting';document.querySelector('#home-countdown').textContent=`${a.seconds_remaining??0} сек.`;if(a.url)document.querySelector('#home-arena-link').href=a.url;document.querySelector('#home-updated').textContent=`${d.worlds?.length??0} миров · обновлено ${new Date().toLocaleTimeString()}`}catch(_){document.querySelector('#home-updated').textContent='Нет связи с Hub API' }}refreshHome();setInterval(refreshHome,5000)</script>
+    """
+    values = {
+        "__WORLD_NAME__": esc(arena.get("world_name") or "Подготовка арены"),
+        "__ARENA_NAME__": esc(arena.get("arena_name") or "Ожидание"),
+        "__ARENA_STATUS__": esc(arena.get("status", "starting")),
+        "__COUNTDOWN__": str(arena.get("seconds_remaining", 0)),
+        "__ARENA_URL__": esc(arena.get("url", f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}")),
+    }
+    for placeholder, value in values.items():
+        body = body.replace(placeholder, value)
+    return page("DatsMagic Hub", body)
+
+
+def docs_html() -> bytes:
+    body = """
+    <h1>Документация</h1><section class=card><p>Справка по игровому API, hub API и правилам мира.</p>
+    <div class=tabs><a class=button href="/docs/api">API</a><a class=button href="/docs/world">Правила мира</a><a class=button href="/api/docs/mechanics">Полная механика (Markdown)</a></div></section>
+    """
+    return page("Документация · DatsMagic", body)
+
+
+def register_html() -> bytes:
+    body = """
+    <h1>Регистрация команды</h1><section class=card><p>Задайте токен, который будет отправлять ваш игровой клиент, и отображаемое имя. Повторная регистрация токена меняет имя. Сам токен не показывается в таблицах и API чтения.</p>
+    <form id=f><label for=t>Токен</label><input id=t type=password maxlength=128 autocomplete=new-password required><label for=n>Имя команды</label><input id=n maxlength=48 required><p><button>Сохранить</button></p></form><p id=result role=status></p></section>
+    <script>document.querySelector('#f').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:document.querySelector('#t').value,name:document.querySelector('#n').value})});const d=await r.json();const out=document.querySelector('#result');out.className=r.ok?'ok':'error';out.textContent=r.ok?`Готово: ${d.name}. Team ID ${d.team_id}`:(d.error||'Ошибка');});</script>
+    """
+    return page("Регистрация · DatsMagic", body)
+
+
+def worlds_html() -> bytes:
+    body = """
+    <div class=eyebrow>Каталог миров</div><h1>Выбери, куда лететь дальше</h1>
+    <section class=card><div class=grid><label>Изучить профиль<select id=world-select></select></label><div><p id=current class=status>Подключаемся к арене…</p><small id=catalog-summary>Загружаю каталог миров…</small></div></div></section>
+    <section class=card><div class=eyebrow>Голосование команды</div><h2>Каким будет следующий мир?</h2><p>Один голос на зарегистрированную команду. Его можно поменять до выбора арены. При равенстве голосов победителя определит случай; без голосов мир тоже будет выбран случайно.</p>
+      <form id=vote-form><div class=grid><label>Ваш выбор<select id=vote-world required></select></label><label>Токен команды<input id=vote-token type=password maxlength=128 autocomplete=current-password placeholder="Токен, зарегистрированный в Hub" required></label></div><p><button>Отдать голос <span aria-hidden=true>→</span></button> <span id=vote-result role=status aria-live=polite></span></p></form>
+      <h3>Кандидаты и голоса</h3><div id=vote-list class=muted>Загружаю…</div>
+    </section>
+    <section class=card><div class=eyebrow>Профиль мира</div><h2 id=world-title>Загрузка настроек…</h2><p id=world-description></p><pre id=world-config></pre></section>
+    <script>
+    let worlds=[],selectedWorld=null,catalogSignature='';
+    const select=document.querySelector('#world-select'),voteSelect=document.querySelector('#vote-world');
+    select.onchange=()=>{selectedWorld=Number(select.value);showWorld()};
+    function showWorld(){const w=worlds.find(x=>x.world_number===selectedWorld);if(!w)return;document.querySelector('#world-title').textContent=`${w.name} · ${w.id} · мир ${w.world_number}`;document.querySelector('#world-description').textContent=w.description;document.querySelector('#world-config').textContent=JSON.stringify(w.config,null,2)}
+    async function refreshVotes(){const response=await fetch('/api/votes'),data=await response.json(),host=document.querySelector('#vote-list');if(!response.ok)throw Error(data.error||'Не удалось загрузить голоса');const rows=(data.worlds||[]).filter(item=>item.votes>0).sort((a,b)=>b.votes-a.votes||a.name.localeCompare(b.name,'ru'));host.replaceChildren();if(!rows.length){host.textContent='Пока ни одной команды не проголосовало.';return}const max=Math.max(...rows.map(item=>item.votes),1);for(const item of rows){const row=document.createElement('div');row.className='vote-row';const name=document.createElement('span');name.textContent=item.name;const track=document.createElement('div');track.className='vote-track';const fill=document.createElement('div');fill.className='vote-fill';fill.style.width=`${Math.max(5,item.votes/max*100)}%`;track.append(fill);const count=document.createElement('strong');count.textContent=`${item.votes}`;row.append(name,track,count);host.append(row)}}
+    async function refresh(){try{const response=await fetch('/api/worlds'),data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось загрузить миры');worlds=data.worlds||[];const active=data.active||{},signature=worlds.map(w=>w.id).join('|');document.querySelector('#catalog-summary').textContent=`${worlds.length} профилей · каталог assets/worlds.json`;if(signature!==catalogSignature){catalogSignature=signature;const previous=select.value;select.replaceChildren();voteSelect.replaceChildren();for(const w of worlds){select.add(new Option(`${w.world_number}. ${w.name} · ${w.id}`,w.world_number));voteSelect.add(new Option(`${w.name} · ${w.id}`,w.id))}selectedWorld=worlds.some(w=>String(w.world_number)===previous)?Number(previous):(active.world_number??worlds[0]?.world_number);if(selectedWorld!=null)select.value=selectedWorld}document.querySelector('#current').textContent=active.world_number?`Сейчас: ${active.arena_name} · ${active.world_name} · ${active.status} · осталось ${active.seconds_remaining??0} сек.`:'Арена сейчас перезапускается';showWorld();await refreshVotes()}catch(error){document.querySelector('#current').textContent=`Ошибка обновления: ${error.message}`}}
+    document.querySelector('#vote-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button'),out=document.querySelector('#vote-result');button.disabled=true;out.className='muted';out.textContent='Отправляю голос…';try{const response=await fetch('/api/votes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:document.querySelector('#vote-token').value,world_id:voteSelect.value})}),data=await response.json();if(!response.ok)throw Error(data.error||'Голос не принят');out.className='ok';out.textContent='Голос принят. Его можно изменить до выбора следующего мира.';document.querySelector('#vote-token').value='';await refreshVotes()}catch(error){out.className='error';out.textContent=error.message}finally{button.disabled=false}});
+    refresh();setInterval(refresh,5000)
+    </script>
+    """
+    return page("Миры · DatsMagic", body)
+
+
+def leaderboard_html() -> bytes:
+    body = """
+    <h1>Лидерборд</h1><section class=card><div class=grid><label>Раздел<select id=scope><option value=current>Текущая арена</option><option value=library>Библиотека арен</option><option value=world>Итоги одного мира</option><option value=all>Итоги всех миров</option></select></label><label id=world-label>Фильтр по миру<select id=world></select></label></div><p id=summary class=muted>Загружаю лидерборд…</p>
+    <div id=library class=card hidden><div class=grid><p id=library-summary class=muted></p><div><button id=prev-page>← Новее</button> <button id=next-page>Старее →</button></div></div><div id=run-list class=run-library></div></div>
+    <div style="overflow:auto"><table id=table></table></div><p id=totals-note class=muted hidden>В сводке по миру и всем мирам показатели суммируются по попыткам. «Золото» — сумма остатков на конец запусков, а не текущий баланс.</p></section>
+    <script>
+    const world=document.querySelector('#world'),scope=document.querySelector('#scope');
+    const runLimit=30;let worldCatalog=[],runOffset=0,selectedRunId=new URLSearchParams(location.search).get('run_id');
+    if(selectedRunId)scope.value='library';
+    function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+    async function loadWorlds(){
+      const d=await(await fetch('/api/worlds')).json();worldCatalog=d.worlds;
+      if(world.options.length===0){world.add(new Option('Все миры',''));for(const w of worldCatalog)world.add(new Option(`${w.name} · ${w.id}`,w.world_number));world.value=''}
+      return d;
+    }
+    async function loadRuns(active){
+      const query=new URLSearchParams({limit:String(runLimit),offset:String(runOffset)});if(world.value)query.set('world',world.value);
+      const d=await(await fetch('/api/runs?'+query.toString())).json();const runs=d.runs||[];
+      const start=d.total?d.offset+1:0;document.querySelector('#library-summary').textContent=`Арены ${start}–${d.offset+runs.length} из ${d.total||0}`;
+      document.querySelector('#prev-page').disabled=runOffset===0;document.querySelector('#next-page').disabled=runOffset+runLimit>=d.total;
+      const entries=[];
+      if(active.run_id&&!runs.some(item=>item.id===active.run_id))entries.push(`<a class="run-link active-run" href="/leaderboard?run_id=${encodeURIComponent(active.run_id)}">● Сейчас: ${esc(active.arena_name)} · ${esc(active.world_name)}</a>`);
+      for(const item of runs){const isActive=item.id===active.run_id;entries.push(`<a class="run-link ${isActive?'active-run':''}" href="/leaderboard?run_id=${encodeURIComponent(item.id)}">${isActive?'● СЕЙЧАС · ':''}${esc(item.arena_name)} · ${esc(item.world_name)} · ${new Date(item.started_at).toLocaleString()} · ${esc(item.status)}</a>`)}
+      document.querySelector('#run-list').innerHTML=entries.join('')||'<p class=muted>Запусков пока нет.</p>';
+      if(!selectedRunId)selectedRunId=active.run_id||(runs[0]?.id??null);
+      return selectedRunId;
+    }
+    function showRunTable(d,summary){
+      document.querySelector('#summary').textContent=summary;
+      document.querySelector('#table').innerHTML='<thead><tr><th>#</th><th>Команда</th><th>Золото</th><th>Собрано золота</th><th>Потеряно ковров от аварий</th><th>Пройденное расстояние</th></tr></thead><tbody>'+d.teams.map(t=>`<tr><td>${t.rank}</td><td class=team>${esc(t.name)}</td><td>${t.gold}</td><td>${t.gold_collected}</td><td>${t.carpets_lost}</td><td>${Math.round(t.distance_travelled)}</td></tr>`).join('')+'</tbody>';
+    }
+    async function refresh(){
+      const s=scope.value;document.querySelector('#world-label').style.display=['world','library'].includes(s)?'':'none';document.querySelector('#library').hidden=s!=='library';document.querySelector('#totals-note').hidden=!['world','all'].includes(s);
+      const worldState=await loadWorlds();let url,summary='';
+      if(s==='current'){
+        if(!worldState.active.run_id){document.querySelector('#summary').textContent='Арена запускается; лидерборд появится после первого отчёта.';document.querySelector('#table').innerHTML='';return}
+        url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(worldState.active.run_id);summary=`${worldState.active.arena_name} · ${worldState.active.world_name} · текущая арена`;
+      }else if(s==='world'){
+        if(!world.value)world.value=String(worldState.active.world_number??1);
+        url='/api/leaderboard?scope=world&world='+encodeURIComponent(world.value);
+      }
+      else if(s==='library'){
+        const runId=await loadRuns(worldState.active);if(!runId){document.querySelector('#summary').textContent='Запусков пока нет.';document.querySelector('#table').innerHTML='';return}
+        url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(runId);
+      }else url='/api/leaderboard?scope=all';
+      const r=await fetch(url);const d=await r.json();if(!r.ok){document.querySelector('#summary').textContent=d.error||'Ошибка';return}
+      if(s==='library'||s==='current'){if(s==='library')summary=`${d.run.arena_name} · ${d.run.world_name} · ${d.run.status}`;showRunTable(d,summary);return}
+      const selectedWorld=worldCatalog.find(w=>String(w.world_number)===world.value);
+      document.querySelector('#summary').textContent=s==='world'?`Суммарные результаты мира ${selectedWorld?.name} · ${selectedWorld?.id}`:'Суммарные результаты всех команд по всем мирам';
+      document.querySelector('#table').innerHTML='<thead><tr><th>Место</th><th>Команда</th><th>Попыток</th><th>Золото</th><th>Собрано золота</th><th>Потеряно ковров от аварий</th><th>Пройденное расстояние</th></tr></thead><tbody>'+d.teams.map(t=>`<tr><td>${t.rank}</td><td class=team>${esc(t.name)}</td><td>${t.attempts}</td><td>${t.total.gold}</td><td>${t.total.gold_collected}</td><td>${t.total.carpets_lost}</td><td>${Math.round(t.total.distance_travelled)}</td></tr>`).join('')+'</tbody>';
+    }
+    scope.onchange=refresh;world.onchange=()=>{runOffset=0;refresh()};document.querySelector('#prev-page').onclick=()=>{runOffset=Math.max(0,runOffset-runLimit);refresh()};document.querySelector('#next-page').onclick=()=>{runOffset+=runLimit;refresh()};refresh();setInterval(refresh,5000)
+    </script>
+    """
+    return page("Лидерборд · DatsMagic", body)
+
+
+class RequestHandler(BaseHTTPRequestHandler):
+    state: HubState
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        print(f"[hub-http] {self.address_string()} {fmt % args}")
+
+    def send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json(self, status: int, body: Any) -> None:
+        self.send_bytes(status, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        state = self.state
+        try:
+            if parsed.path == "/static/hub.css":
+                self.send_bytes(200, (HUB_DIR / "static" / "hub.css").read_bytes(), "text/css; charset=utf-8")
+            elif parsed.path == "/" or parsed.path == "/index.html":
+                self.send_bytes(200, home_html(state), "text/html; charset=utf-8")
+            elif parsed.path == "/docs":
+                self.send_bytes(200, docs_html(), "text/html; charset=utf-8")
+            elif parsed.path == "/leaderboard":
+                self.send_bytes(200, leaderboard_html(), "text/html; charset=utf-8")
+            elif parsed.path == "/register":
+                self.send_bytes(200, register_html(), "text/html; charset=utf-8")
+            elif parsed.path == "/worlds":
+                self.send_bytes(200, worlds_html(), "text/html; charset=utf-8")
+            elif parsed.path in {"/docs/api", "/docs/world"}:
+                file_name = "api.md" if parsed.path.endswith("api") else "world-rules.md"
+                source = (DOCS_DIR / file_name).read_text(encoding="utf-8")
+                self.send_bytes(200, page("Документация", f'<article class=card>{markdown_html(source)}</article>'), "text/html; charset=utf-8")
+            elif parsed.path in {"/api/docs/api", "/api/docs/world"}:
+                file_name = "api.md" if parsed.path.endswith("api") else "world-rules.md"
+                self.send_bytes(200, (DOCS_DIR / file_name).read_bytes(), "text/markdown; charset=utf-8")
+            elif parsed.path == "/api/docs/mechanics":
+                self.send_bytes(200, (ROOT / "docs" / "mechanics.md").read_bytes(), "text/markdown; charset=utf-8")
+            elif parsed.path == "/api/worlds":
+                active = state.current_arena()
+                worlds = [
+                    {**world_config,
+                     "active": active.get("world_number") == world_config["world_number"]}
+                    for world_config in state.world_configs
+                ]
+                self.send_json(200, {"active": active, "worlds": worlds})
+            elif parsed.path == "/api/votes":
+                counts = state.vote_results()
+                worlds = [{"world_id": world["id"], "name": world["name"],
+                           "votes": counts.get(world["id"], 0)} for world in state.world_configs]
+                self.send_json(200, {"total_votes": sum(counts.values()), "worlds": worlds})
+            elif parsed.path == "/api/runs":
+                world = int(query["world"][0]) if query.get("world") else None
+                limit = int(query.get("limit", ["50"])[0])
+                offset = int(query.get("offset", ["0"])[0])
+                if not 1 <= limit <= 200 or offset < 0:
+                    raise ValueError("limit must be 1–200 and offset must be non-negative")
+                self.send_json(200, state.store.runs(world, limit, offset))
+            elif parsed.path == "/api/leaderboard":
+                scope = query.get("scope", ["all"])[0]
+                world = int(query["world"][0]) if query.get("world") else None
+                run_id = query.get("run_id", [None])[0]
+                self.send_json(200, state.store.leaderboard(scope, state.registry.names(), world, run_id))
+            elif parsed.path == "/health":
+                self.send_json(200, {"status": "ok", "active_arena": state.current_arena(), **state.store.counts()})
+            else:
+                self.send_json(404, {"error": "not found"})
+        except (ValueError, KeyError) as exc:
+            self.send_json(400 if isinstance(exc, ValueError) else 404, {"error": str(exc)})
+        except (OSError, sqlite3.Error) as exc:
+            self.send_json(500, {"error": str(exc)})
+        except Exception as exc:
+            self.log_error("Unhandled GET request error: %s", repr(exc))
+            self.send_json(500, {"error": "internal server error"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path not in {"/api/teams", "/api/votes"}:
+            self.send_json(404, {"error": "not found"})
+            return
+        try:
+            length = int(self.headers.get("content-length", "0"))
+            if not 1 <= length <= 4096:
+                raise ValueError("request body must be between 1 and 4096 bytes")
+            body = json.loads(self.rfile.read(length))
+            if path == "/api/teams":
+                result = self.state.registry.register(str(body.get("token", "")), str(body.get("name", "")))
+            else:
+                token = str(body.get("token", ""))
+                team_id = self.state.registry.resolve_token(token)
+                if team_id is None:
+                    self.send_json(403, {"error": "token is not registered"})
+                    return
+                world_id = str(body.get("world_id", ""))
+                counts = self.state.set_vote(team_id, world_id)
+                result = {"world_id": world_id, "votes": counts.get(world_id, 0),
+                          "total_votes": sum(counts.values())}
+            self.send_json(200, result)
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self.send_json(400, {"error": str(exc)})
+        except OSError as exc:
+            self.send_json(500, {"error": str(exc)})
+
+
+async def serve() -> None:
+    world_catalog = load_world_catalog()
+    if RUN_SECONDS <= 0 or POLL_SECONDS <= 0:
+        raise RuntimeError("HUB_RUN_SECONDS and HUB_POLL_SECONDS must be > 0")
+    if not ARENA_BIN.is_file():
+        raise RuntimeError(f"Arena executable not found: {ARENA_BIN}. Build it with scripts/run_hub.sh")
+    state = HubState(load_world_configs(world_catalog))
+    handler = type("BoundRequestHandler", (RequestHandler,), {"state": state})
+    httpd = ThreadingHTTPServer((HUB_HOST, HUB_PORT), handler)
+    threading.Thread(target=httpd.serve_forever, name="hub-http", daemon=True).start()
+    print(f"DatsMagic Hub: http://{HUB_HOST}:{HUB_PORT} · arena={ARENA_HOST}:{ARENA_PORT} · {len(world_catalog)} worlds · run={RUN_SECONDS}s")
+    supervisor = asyncio.create_task(run_arena_loop(state), name="arena-supervisor")
+    try:
+        await supervisor
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(serve())
+    except KeyboardInterrupt:
+        print("DatsMagic Hub stopped")
+    except Exception as exc:
+        print(f"DatsMagic Hub startup error: {exc}", file=sys.stderr)
+        raise

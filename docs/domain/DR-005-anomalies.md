@@ -18,7 +18,7 @@ related_domains:
   - DR-001
   - DR-002
   - DR-003
-  - visualizer_2/docs/domain/DR-001-observation-and-visualization.md
+  - docs/components/arena-visualizer/domain/DR-001-observation-and-visualization.md
 ---
 
 # DR-005: Динамические аномалии, силовые поля и уничтожение ковров (Dynamic Moving Anomalies & Carpet Destruction)
@@ -270,7 +270,7 @@ stateDiagram-v2
   - `docs/domain/DR-001-game-loop-and-state.md` — включение фазы движения аномалий и детекции гибели в единый такт.
   - `docs/domain/DR-002-vector-physics.md` — расчет сил притяжения/отталкивания и передача в векторный интегратор.
   - `docs/domain/DR-003-entity-interactions-and-collisions.md` — делегирование логики аномалий в DR-005.
-  - `visualizer_2/docs/features/FE-002-world-rendering.md` — визуализация типов аномалий, областей влияния и ядер.
+  - `docs/components/arena-visualizer/features/FE-002-world-rendering.md` — визуализация типов аномалий, областей влияния и ядер.
 
 ---
 

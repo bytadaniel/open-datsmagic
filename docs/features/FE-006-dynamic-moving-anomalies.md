@@ -196,10 +196,10 @@ impl DynamicAnomaly {
 
 ## 6. План реализации
 
-- [x] **Шаг 1:** Объявить структуры `AnomalyType` и `DynamicAnomaly` в `server/src/spatial/entities.rs`.
+- [x] **Шаг 1:** Объявить структуры `AnomalyType` и `DynamicAnomaly` в `lib/arena-server/src/spatial/entities.rs`.
 - [x] **Шаг 2:** Реализовать методы расчета сил притяжения и отталкивания, а также детекции контакта с ядром `touches_core`.
-- [x] **Шаг 3:** Разработать модуль спавнера `AnomalySpawner` в `server/src/spatial/spawner.rs` с алгоритмом генерации траекторий, пересекающих арену.
-- [x] **Шаг 4:** Интегрировать динамические аномалии и спавнер в `SpatialCollisionManager` в `server/src/spatial/manager.rs`.
+- [x] **Шаг 3:** Разработать модуль спавнера `AnomalySpawner` в `lib/arena-server/src/spatial/spawner.rs` с алгоритмом генерации траекторий, пересекающих арену.
+- [x] **Шаг 4:** Интегрировать динамические аномалии и спавнер в `SpatialCollisionManager` в `lib/arena-server/src/spatial/manager.rs`.
 - [x] **Шаг 5:** Добавить статус игрока `Destroyed` в `PlayerState` и обработку гибели ковра в тактовом цикле `GameEngineLoop`.
 - [x] **Шаг 6:** Написать unit- и интеграционные тесты для проверки траекторий, спавна, отталкивания/притяжения и уничтожения ковра при контакте с ядром.
 

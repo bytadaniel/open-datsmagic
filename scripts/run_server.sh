@@ -7,4 +7,4 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=== Запуск игрового сервера DatsMagic ==="
 cd "$ROOT_DIR"
-cargo run --manifest-path server/Cargo.toml "$@"
+cargo run --manifest-path lib/arena-server/Cargo.toml "$@"
