@@ -11,6 +11,7 @@ import math
 import os
 import random
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -18,6 +19,8 @@ import sys
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -134,9 +137,29 @@ class TeamRegistry:
             existing = self.teams.get(key)
             if existing and existing["token"] != token:
                 raise ValueError("token fingerprint collision; choose another token")
+            if any(
+                other_key != key and team["name"].casefold() == name.casefold()
+                for other_key, team in self.teams.items()
+            ):
+                raise ValueError("team name is already taken")
             self.teams[key] = {"token": token, "name": name}
             self._save_locked()
         return {"team_id": key, "name": name}
+
+    def create(self, name: str) -> dict[str, str]:
+        name = name.strip()
+        if not 1 <= len(name) <= 48 or any(ord(ch) < 32 for ch in name):
+            raise ValueError("name must be 1–48 printable characters")
+        with self.lock:
+            if any(team["name"].casefold() == name.casefold() for team in self.teams.values()):
+                raise ValueError("team name is already taken")
+            while True:
+                token = secrets.token_urlsafe(32)
+                team_id = token_id(token)
+                if team_id not in self.teams:
+                    break
+            result = self.register(token, name)
+            return {**result, "token": token}
 
     def names(self) -> dict[str, str]:
         with self.lock:
@@ -377,6 +400,7 @@ class HubState:
             ARENA_DATA_DIR.chmod(0o700)
         self.world_configs = world_configs
         self.registry = TeamRegistry(REGISTRY_PATH)
+        self.observer_token = secrets.token_urlsafe(32)
         self.store = Store(DB_PATH)
         self.lock = threading.RLock()
         self.votes: dict[str, str] = {}
@@ -496,6 +520,7 @@ async def run_arena_loop(state: HubState) -> None:
             "DATS_WORLD_RUN_NAME": arena_name,
             "DATS_WORLDS_PATH": str(WORLDS_PATH),
             "DATS_TOKEN_REGISTRY_PATH": str(REGISTRY_PATH),
+            "DATS_OBSERVER_TOKEN": state.observer_token,
             "DATS_LEADERBOARD_PATH": str(report_path),
             "DATS_WORLD_STATUS_PATH": str(status_path),
         })
@@ -618,7 +643,7 @@ STYLE = '<link rel="stylesheet" href="/static/hub.css">'
 
 
 def page(title: str, body: str) -> bytes:
-    nav = '<header><strong>DatsMagic</strong><a href="/">Обзор</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
+    nav = '<header><strong>DatsMagic</strong><a href="/">Обзор</a><a href="/arena">Арена</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
     footer = '<footer class=site-footer>DatsMagic · Мир меняется. Команды остаются.</footer>'
     return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main>{body}</main>{footer}</body></html>").encode("utf-8")
 
@@ -630,7 +655,7 @@ def home_html(state: HubState) -> bytes:
       <div class=metrics><div class=metric><small>Сейчас играют</small><strong id=home-world>__WORLD_NAME__</strong></div><div class=metric><small>Запуск</small><strong id=home-run>__ARENA_NAME__</strong></div><div class=metric><small>Статус</small><strong id=home-status>__ARENA_STATUS__</strong></div><div class=metric><small>До смены мира</small><strong id=home-countdown>__COUNTDOWN__ сек.</strong></div></div>
       <p><a id=home-arena-link class="button secondary" href="__ARENA_URL__">Открыть API арены</a> <span id=home-updated class=muted>обновление состояния каждые 5 секунд</span></p>
     </section>
-    <section class=grid><a class="card quick-link" href="/worlds"><span class=eyebrow>01 · Участвуй</span><h2>Голосуй за мир</h2><p>Один голос от команды. Меняй решение до старта следующей арены.</p><span class=status>Открыть каталог →</span></a><a class="card quick-link" href="/leaderboard"><span class=eyebrow>02 · Сравнивай</span><h2>Следи за командами</h2><p>Результаты активного запуска, отдельные арены и сводные итоги.</p><span class=status>Открыть лидерборд →</span></a><a class="card quick-link" href="/register"><span class=eyebrow>03 · Представься</span><h2>Имя команды</h2><p>Зарегистрируй токен и выбери имя, которое увидят остальные.</p><span class=status>Настроить команду →</span></a></section>
+    <section class=grid><a class="card quick-link" href="/arena"><span class=eyebrow>01 · Наблюдай</span><h2>Живая арена</h2><p>Ковры, золото, аномалии и простое ручное управление прямо в браузере.</p><span class=status>Открыть визуализацию →</span></a><a class="card quick-link" href="/worlds"><span class=eyebrow>02 · Участвуй</span><h2>Голосуй за мир</h2><p>Один голос от команды. Меняй решение до старта следующей арены.</p><span class=status>Открыть каталог →</span></a><a class="card quick-link" href="/leaderboard"><span class=eyebrow>03 · Сравнивай</span><h2>Следи за командами</h2><p>Результаты активного запуска, отдельные арены и сводные итоги.</p><span class=status>Открыть лидерборд →</span></a><a class="card quick-link" href="/register"><span class=eyebrow>04 · Представься</span><h2>Создай команду</h2><p>Выбери уникальное имя и получи токен для игрового бота.</p><span class=status>Зарегистрировать команду →</span></a></section>
     <script>async function refreshHome(){try{const d=await(await fetch('/api/worlds')).json(),a=d.active||{};document.querySelector('#home-world').textContent=a.world_name||'Подготовка арены';document.querySelector('#home-run').textContent=a.arena_name||'Ожидание';document.querySelector('#home-status').textContent=a.status||'starting';document.querySelector('#home-countdown').textContent=`${a.seconds_remaining??0} сек.`;if(a.url)document.querySelector('#home-arena-link').href=a.url;document.querySelector('#home-updated').textContent=`${d.worlds?.length??0} миров · обновлено ${new Date().toLocaleTimeString()}`}catch(_){document.querySelector('#home-updated').textContent='Нет связи с Hub API' }}refreshHome();setInterval(refreshHome,5000)</script>
     """
     values = {
@@ -645,19 +670,51 @@ def home_html(state: HubState) -> bytes:
     return page("DatsMagic Hub", body)
 
 
+def arena_visualizer_html() -> bytes:
+    body = '''
+    <link rel="stylesheet" href="/static/arena-visualizer.css">
+    <section class="visualizer-shell">
+      <div class="visualizer-top card">
+        <div><span class="eyebrow">ЖИВАЯ АРЕНА</span><h1>Наблюдение</h1><p>Лёгкая карта мира. Выбор и слежение не включают управление.</p></div>
+        <form id="connect-form" class="connect-form"><label for="viz-token">Токен команды <span class="muted">(необязательно для наблюдения)</span></label><div class="connect-row"><input id="viz-token" type="password" autocomplete="off" placeholder="Вставь зарегистрированный токен"><button type="submit">Мой флот</button><button id="observer-connect" type="button" class="secondary">Наблюдать</button></div></form>
+      </div>
+      <div class="visualizer-layout">
+        <section class="visualizer-stage card">
+          <div class="viz-toolbar">
+            <label class="select-label">Следить за<select id="carpet-select" disabled><option>Подключись к арене</option></select></label>
+            <button id="follow-toggle" class="secondary" disabled>◎ Следить</button>
+            <button id="manual-toggle" class="secondary" disabled>Ручное управление: выкл.</button>
+            <button id="zoom-out" class="secondary" aria-label="Уменьшить">−</button><button id="zoom-in" class="secondary" aria-label="Увеличить">+</button>
+            <button id="camera-reset" class="secondary">Обзор</button><button id="fullscreen-toggle" class="secondary">⛶ На весь экран</button>
+          </div>
+          <div class="canvas-wrap"><canvas id="arena-canvas" aria-label="Карта арены"></canvas><div id="touch-stick" class="touch-stick" aria-label="Виртуальный стик"><div class="stick-base"><i></i></div><span>тяни для ускорения</span></div><div id="connection-badge" class="connection-badge">Нет подключения</div></div>
+          <div class="viz-footer"><span id="world-label">Мир не загружен</span><span id="fps-label">— FPS</span><span>Колесо / щипок — зум · перетаскивание / стрелки — карта</span></div>
+        </section>
+        <aside class="viz-sidebar">
+          <section class="card selected-panel"><span class="eyebrow">ВЫБРАННЫЙ КОВЁР</span><h2 id="selected-title">Ничего не выбрано</h2><div id="selected-stats" class="selected-stats muted">Наблюдай без токена или подключи свой флот.</div><div class="vector-legend"><span><i class="v-speed"></i>Скорость V</span><span><i class="v-self"></i>Ускорение A</span><span><i class="v-anomaly"></i>Силы аномалий W</span></div></section>
+          <section class="card viz-help"><h2>Управление</h2><p><b>ПК:</b> колесо — масштаб, перетаскивание или стрелки — перемещение, клик по ковру — выбор. Включи слежение отдельно.</p><p><b>Телефон:</b> один палец — карта, два — масштаб. Для ручного режима выбери свой ковер и потяни виртуальный стик.</p><p>Ручное управление работает только для твоего живого ковра. При включении бот временно уступает ему управление.</p></section>
+        </aside>
+      </div>
+      <p id="viz-message" class="viz-message" role="status"></p>
+    </section>
+    <script src="/static/arena-visualizer.js" defer></script>
+    '''
+    return page("Живая арена · DatsMagic", body)
+
+
 def docs_html() -> bytes:
     body = """
-    <h1>Документация</h1><section class=card><p>Справка по игровому API, hub API и правилам мира.</p>
-    <div class=tabs><a class=button href="/docs/api">API</a><a class=button href="/docs/world">Правила мира</a><a class=button href="/api/docs/mechanics">Полная механика (Markdown)</a></div></section>
+    <h1>Документация</h1><section class=card><p>Всё необходимое, чтобы зарегистрировать команду и подключить игрового бота.</p>
+    <div class=tabs><a class=button href="/docs/api">Игровой API</a><a class=button href="/docs/world">Как играть и написать бота</a><a class=button href="/api/docs/mechanics">Техническая механика (Markdown)</a></div></section>
     """
     return page("Документация · DatsMagic", body)
 
 
 def register_html() -> bytes:
     body = """
-    <h1>Регистрация команды</h1><section class=card><p>Задайте токен, который будет отправлять ваш игровой клиент, и отображаемое имя. Повторная регистрация токена меняет имя. Сам токен не показывается в таблицах и API чтения.</p>
-    <form id=f><label for=t>Токен</label><input id=t type=password maxlength=128 autocomplete=new-password required><label for=n>Имя команды</label><input id=n maxlength=48 required><p><button>Сохранить</button></p></form><p id=result role=status></p></section>
-    <script>document.querySelector('#f').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:document.querySelector('#t').value,name:document.querySelector('#n').value})});const d=await r.json();const out=document.querySelector('#result');out.className=r.ok?'ok':'error';out.textContent=r.ok?`Готово: ${d.name}. Team ID ${d.team_id}`:(d.error||'Ошибка');});</script>
+    <h1>Регистрация команды</h1><section class=card><p>Придумайте уникальное имя команды. Hub создаст токен автоматически — сохраните его: повторно показать секрет нельзя. Токен нужен боту для каждого игрового запроса.</p>
+    <form id=f><label for=n>Имя команды</label><input id=n maxlength=48 autocomplete=organization required><p><button>Создать команду и токен</button></p></form><div id=result role=status aria-live=polite></div></section>
+    <script>document.querySelector('#f').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.querySelector('#n').value})});const d=await r.json();const out=document.querySelector('#result');out.replaceChildren();out.className=r.ok?'ok':'error';if(!r.ok){out.textContent=d.error||'Ошибка';return}const title=document.createElement('p');title.textContent=`Команда ${d.name} создана. Сохраните токен сейчас:`;const token=document.createElement('code');token.textContent=d.token;token.style='display:block;overflow-wrap:anywhere;padding:1rem;margin:.75rem 0';const copy=document.createElement('button');copy.type='button';copy.textContent='Скопировать токен';copy.onclick=async()=>{await navigator.clipboard.writeText(d.token);copy.textContent='Скопировано'};const warning=document.createElement('p');warning.textContent='Токен показывается только один раз. Не отправляйте его другим и не публикуйте.';out.append(title,token,copy,warning);document.querySelector('#f').reset()});</script>
     """
     return page("Регистрация · DatsMagic", body)
 
@@ -766,8 +823,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/static/hub.css":
                 self.send_bytes(200, (HUB_DIR / "static" / "hub.css").read_bytes(), "text/css; charset=utf-8")
+            elif parsed.path in {"/static/arena-visualizer.css", "/static/arena-visualizer.js"}:
+                asset = "arena-visualizer.css" if parsed.path.endswith(".css") else "arena-visualizer.js"
+                content_type = "text/css; charset=utf-8" if asset.endswith(".css") else "application/javascript; charset=utf-8"
+                self.send_bytes(200, (HUB_DIR / "static" / asset).read_bytes(), content_type)
             elif parsed.path == "/" or parsed.path == "/index.html":
                 self.send_bytes(200, home_html(state), "text/html; charset=utf-8")
+            elif parsed.path == "/arena":
+                self.send_bytes(200, arena_visualizer_html(), "text/html; charset=utf-8")
             elif parsed.path == "/docs":
                 self.send_bytes(200, docs_html(), "text/html; charset=utf-8")
             elif parsed.path == "/leaderboard":
@@ -824,16 +887,28 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path not in {"/api/teams", "/api/votes"}:
+        if path not in {"/api/teams", "/api/votes", "/api/visualizer/move"}:
             self.send_json(404, {"error": "not found"})
             return
         try:
             length = int(self.headers.get("content-length", "0"))
-            if not 1 <= length <= 4096:
-                raise ValueError("request body must be between 1 and 4096 bytes")
+            maximum_body = 16384 if path == "/api/visualizer/move" else 4096
+            if not 1 <= length <= maximum_body:
+                raise ValueError(f"request body must be between 1 and {maximum_body} bytes")
             body = json.loads(self.rfile.read(length))
+            if path == "/api/visualizer/move":
+                self.handle_visualizer_move(body)
+                return
             if path == "/api/teams":
-                result = self.state.registry.register(str(body.get("token", "")), str(body.get("name", "")))
+                name = str(body.get("name", ""))
+                if body.get("token"):
+                    token = str(body["token"])
+                    if self.state.registry.resolve_token(token) is None:
+                        self.send_json(403, {"error": "token is not registered"})
+                        return
+                    result = self.state.registry.register(token, name)
+                else:
+                    result = self.state.registry.create(name)
             else:
                 token = str(body.get("token", ""))
                 team_id = self.state.registry.resolve_token(token)
@@ -849,6 +924,95 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
         except OSError as exc:
             self.send_json(500, {"error": str(exc)})
+
+    def handle_visualizer_move(self, body: Any) -> None:
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        commands = body.get("transports", [])
+        if not isinstance(commands, list) or len(commands) > 64:
+            raise ValueError("transports must be an array with at most 64 commands")
+        supplied_token = str(body.get("token", "")).strip()
+        observer = not supplied_token
+        if observer:
+            if commands or any(key in body for key in ("manualCarpetId", "leaseId", "releaseLeaseId")):
+                self.send_json(403, {"error": "observer mode is read-only"})
+                return
+            token = self.state.observer_token
+            team_id = None
+        else:
+            token = supplied_token
+            team_id = self.state.registry.resolve_token(token)
+            if team_id is None:
+                self.send_json(401, {"error": "unknown team token"})
+                return
+        normalized_commands = []
+        for command in commands:
+            if not isinstance(command, dict) or not isinstance(command.get("id"), str):
+                raise ValueError("each transport command must contain a string id")
+            acceleration = command.get("acceleration")
+            if not isinstance(acceleration, dict):
+                raise ValueError("each transport command must contain acceleration")
+            x, y = float(acceleration.get("x", 0)), float(acceleration.get("y", 0))
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("acceleration components must be finite numbers")
+            normalized_commands.append({"id": command["id"], "acceleration": {"x": x, "y": y}})
+
+        lease_id = str(body.get("leaseId", ""))
+        manual_id = body.get("manualCarpetId")
+        lease_path = None
+        if team_id is not None:
+            configured_lease_path = os.environ.get("DATS_MANUAL_CONTROL_FILE")
+            lease_path = (Path(configured_lease_path) if configured_lease_path else
+                          ROOT / "lib" / "bot-variants" / "player_2" / f"manual_control_{token_id(token)}.json")
+        if manual_id is not None:
+            assert team_id is not None and lease_path is not None
+            suffix = manual_id.removeprefix(f"{team_id}_") if isinstance(manual_id, str) else ""
+            if not suffix.isdecimal() or not lease_id or len(lease_id) > 100:
+                self.send_json(403, {"error": "manual control is only allowed for your own carpet"})
+                return
+            if lease_path.is_file():
+                try:
+                    current_lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                    if (int(current_lease.get("expiresAtUnixMs", 0)) > int(time.time() * 1000)
+                            and current_lease.get("leaseId") != lease_id):
+                        self.send_json(409, {"error": "this team already has an active manual-control session"})
+                        return
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            lease = {"carpetId": manual_id, "leaseId": lease_id,
+                     "expiresAtUnixMs": int(time.time() * 1000) + 1000}
+            lease_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = lease_path.with_name(f".{lease_path.name}.{uuid.uuid4().hex}.tmp")
+            temporary_path.write_text(json.dumps(lease), encoding="utf-8")
+            os.replace(temporary_path, lease_path)
+
+        try:
+            arena_url = f"http://{ARENA_HOST}:{ARENA_PORT}/play/magcarp/player/move"
+            upstream_body = json.dumps({"transports": normalized_commands}).encode("utf-8")
+            request = urllib.request.Request(
+                arena_url, data=upstream_body,
+                headers={"X-Auth-Token": token, "Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=2.0) as response:
+                payload = response.read()
+                content_type = response.headers.get("Content-Type", "application/json; charset=utf-8")
+                self.send_bytes(response.status, payload, content_type)
+        except urllib.error.HTTPError as exc:
+            payload = exc.read()
+            self.send_bytes(exc.code, payload or json.dumps({"error": "arena rejected request"}).encode("utf-8"),
+                            exc.headers.get("Content-Type", "application/json; charset=utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            self.send_json(502, {"error": f"active arena is unavailable: {exc}"})
+        finally:
+            release_id = str(body.get("releaseLeaseId", ""))
+            if release_id and lease_path is not None and lease_path.is_file():
+                try:
+                    current = json.loads(lease_path.read_text(encoding="utf-8"))
+                    if current.get("leaseId") == release_id:
+                        lease_path.unlink()
+                except (OSError, json.JSONDecodeError):
+                    pass
 
 
 async def serve() -> None:

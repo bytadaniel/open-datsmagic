@@ -6,7 +6,6 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
@@ -34,39 +33,52 @@ struct TokenRegistryFile {
 #[derive(Deserialize)]
 struct TokenRegistryTeam {
     token: String,
+    #[serde(default)]
+    name: String,
 }
 
 struct TokenRegistryCache {
     path: PathBuf,
     modified: Option<SystemTime>,
-    tokens: HashSet<String>,
+    tokens: std::collections::HashMap<String, String>,
 }
 
 static TOKEN_REGISTRY_CACHE: OnceLock<Mutex<Option<TokenRegistryCache>>> = OnceLock::new();
 
-fn is_registered_token(token: &str) -> bool {
-    let Some(path) = std::env::var_os("DATS_TOKEN_REGISTRY_PATH").map(PathBuf::from) else {
-        // Standalone development server keeps the historical open-token behavior.
-        return true;
-    };
+fn registered_team_name(token: &str) -> Option<String> {
+    let path = std::env::var_os("DATS_TOKEN_REGISTRY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("apps/arena-hub/data/registry.json")
+        });
     let cache = TOKEN_REGISTRY_CACHE.get_or_init(|| Mutex::new(None));
     let Ok(mut cache) = cache.lock() else {
-        return false;
+        return None;
     };
     let modified = std::fs::metadata(&path)
         .and_then(|metadata| metadata.modified())
         .ok();
     if let Some(current) = cache.as_ref() {
         if modified.is_some() && current.path == path && current.modified == modified {
-            return current.tokens.contains(token);
+            return current.tokens.get(token).cloned();
         }
     }
-    let tokens: HashSet<String> = std::fs::read(&path)
+    let tokens: std::collections::HashMap<String, String> = std::fs::read(&path)
         .ok()
         .and_then(|source| serde_json::from_slice::<TokenRegistryFile>(&source).ok())
-        .map(|registry| registry.teams.into_iter().map(|team| team.token).collect())
+        .map(|registry| {
+            registry
+                .teams
+                .into_iter()
+                .map(|team| (team.token, team.name))
+                .collect()
+        })
         .unwrap_or_default();
-    let registered = tokens.contains(token);
+    let registered = tokens.get(token).cloned();
     *cache = Some(TokenRegistryCache {
         path,
         modified,
@@ -76,7 +88,11 @@ fn is_registered_token(token: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthToken(pub String);
+pub struct AuthToken {
+    player_id: String,
+    team_name: String,
+    observer: bool,
+}
 
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, ApiError> {
     let header = req
@@ -93,11 +109,31 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, A
         }
         None => return Err(ApiError::Unauthorized),
     };
-    if !is_registered_token(&token) {
-        return Err(ApiError::Unauthorized);
-    }
-    req.extensions_mut().insert(AuthToken(token));
+    let observer = std::env::var("DATS_OBSERVER_TOKEN")
+        .ok()
+        .filter(|configured| !configured.is_empty() && configured == &token)
+        .is_some();
+    let (player_id, team_name) = if observer {
+        ("__dats_observer__".to_string(), "Наблюдатель".to_string())
+    } else {
+        (token_fingerprint(&token), registered_team_name(&token).ok_or(ApiError::Unauthorized)?)
+    };
+    req.extensions_mut().insert(AuthToken {
+        player_id,
+        team_name,
+        observer,
+    });
     Ok(next.run(req).await)
+}
+
+fn token_fingerprint(token: &str) -> String {
+    let hash = token
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{hash:016x}")
 }
 
 async fn ensure_player(engine: &GameEngine, player_id: &str) {
@@ -183,19 +219,16 @@ fn legacy_transport(carpet: &CarpetState, snapshot: &WorldSnapshot) -> LegacyTra
 
 fn legacy_desert(
     snapshot: &WorldSnapshot,
-    player_id: &str,
+    player_id: Option<&str>,
+    team_name: &str,
     engine: &GameEngine,
     errors: Vec<String>,
 ) -> LegacyDesertDto {
     let config = engine.config();
-    let player = snapshot
-        .world
-        .players
-        .get(player_id)
-        .expect("registered player");
+    let player = player_id.and_then(|id| snapshot.world.players.get(id));
     let mut transports: Vec<_> = player
-        .carpets
-        .values()
+        .into_iter()
+        .flat_map(|player| player.carpets.values())
         .map(|carpet| legacy_transport(carpet, snapshot))
         .collect();
     transports.sort_by(|a, b| a.id.cmp(&b.id));
@@ -240,7 +273,7 @@ fn legacy_desert(
                 .world
                 .players
                 .iter()
-                .filter(|(other_player_id, _)| other_player_id.as_str() != player_id)
+                .filter(|(other_player_id, _)| player_id.is_none_or(|id| other_player_id.as_str() != id))
                 .flat_map(|(other_player_id, other_player)| {
                     other_player.carpets.iter().map(move |(carpet_id, carpet)| {
                         (
@@ -268,8 +301,8 @@ fn legacy_desert(
         map_size: Vec2::new(config.arena_width, config.arena_height),
         max_accel: config.max_acceleration,
         max_speed: config.max_velocity,
-        name: player.id.clone(),
-        points: player.score,
+        name: team_name.to_string(),
+        points: player.map_or(0, |player| player.score),
         revive_timeout_sec: config.revive_timeout_sec,
         shield_cooldown_ms: config.shield_cooldown_ms,
         shield_time_ms: config.shield_time_ms,
@@ -286,7 +319,16 @@ pub async fn post_legacy_move(
 ) -> Result<Json<LegacyDesertDto>, ApiError> {
     let request: LegacyMoveRequestDto =
         serde_json::from_slice(&body).map_err(|_| ApiError::InvalidVector)?;
-    let player_id = token.0;
+    let player_id = token.player_id;
+    let team_name = token.team_name;
+    if token.observer {
+        if !request.transports.is_empty() {
+            return Err(ApiError::Unauthorized);
+        }
+        return Ok(Json(legacy_desert(
+            &engine.get_snapshot(), None, &team_name, &engine, Vec::new(),
+        )));
+    }
     ensure_player(&engine, &player_id).await;
     let snapshot = engine.get_snapshot();
     let player = snapshot
@@ -329,7 +371,8 @@ pub async fn post_legacy_move(
     }
     Ok(Json(legacy_desert(
         &engine.get_snapshot(),
-        &player_id,
+        Some(&player_id),
+        &team_name,
         &engine,
         errors,
     )))

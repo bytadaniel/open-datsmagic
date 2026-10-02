@@ -1,18 +1,24 @@
 import json
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from hub import (
     HubState,
     Store,
     TeamRegistry,
+    docs_html,
+    arena_visualizer_html,
     home_html,
     leaderboard_html,
     load_world_catalog,
     next_minute_boundary,
     pick_world,
     token_id,
+    RequestHandler,
 )
 
 
@@ -29,11 +35,101 @@ class HubTests(unittest.TestCase):
         home = home_html(state).decode("utf-8")
         leaderboard = leaderboard_html().decode("utf-8")
         self.assertIn("/static/hub.css", home)
+        self.assertIn('href="/arena"', home)
         self.assertIn("refreshHome();setInterval(refreshHome,5000)", home)
+        self.assertIn("Выбери уникальное имя и получи токен", home)
+        docs = docs_html().decode("utf-8")
+        self.assertIn('href="/docs/api"', docs)
+        self.assertIn('href="/docs/world"', docs)
+        self.assertTrue((Path(__file__).parent.parent.parent / "docs/components/arena-hub/api.md").is_file())
+        self.assertTrue((Path(__file__).parent.parent.parent / "docs/components/arena-hub/world-rules.md").is_file())
         for label in ("Золото", "Собрано золота", "Потеряно ковров от аварий", "Пройденное расстояние"):
             self.assertIn(label, leaderboard)
         self.assertNotIn("Золота на руках", leaderboard)
         self.assertNotIn("Всего собрано золота", leaderboard)
+
+    def test_web_arena_visualizer_page_is_responsive_and_has_separate_watch_and_control(self):
+        page = arena_visualizer_html().decode("utf-8")
+        self.assertIn('id="arena-canvas"', page)
+        self.assertIn('id="follow-toggle"', page)
+        self.assertIn('id="manual-toggle"', page)
+        self.assertIn('id="touch-stick"', page)
+        self.assertIn('id="fullscreen-toggle"', page)
+        self.assertIn('id="observer-connect"', page)
+        self.assertIn("arena-visualizer.js", page)
+        self.assertIn("Токен команды", page)
+        self.assertTrue((Path(__file__).parent / "static" / "arena-visualizer.css").is_file())
+        script_path = Path(__file__).parent / "static" / "arena-visualizer.js"
+        self.assertTrue(script_path.is_file())
+        script = script_path.read_text(encoding="utf-8")
+        self.assertIn("function drawCoins(ctx, snapshot)", script)
+        self.assertIn("worldRadius * factor", script)
+        self.assertNotIn("offscreen", script)
+
+    def test_visualizer_proxy_authenticates_and_uses_short_manual_lease(self):
+        class HandlerStub:
+            def __init__(self, registry):
+                self.state = SimpleNamespace(registry=registry)
+                self.responses = []
+
+            def send_bytes(self, status, payload, content_type):
+                self.responses.append((status, payload, content_type))
+
+            def send_json(self, status, payload):
+                self.responses.append((status, payload))
+
+        class UpstreamResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"transports":[]}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = TeamRegistry(Path(directory) / "registry.json")
+            token = "registered-visualizer-token"
+            team = registry.register(token, "Visual Team")
+            lease_path = Path(directory) / "manual.json"
+            handler = HandlerStub(registry)
+            command = {"id": f"{team['team_id']}_0", "acceleration": {"x": 12, "y": -3}}
+            body = {"token": token, "transports": [command], "manualCarpetId": command["id"], "leaseId": "browser-lease"}
+            with patch.dict(os.environ, {"DATS_MANUAL_CONTROL_FILE": str(lease_path)}), \
+                 patch("urllib.request.urlopen", return_value=UpstreamResponse()) as upstream:
+                RequestHandler.handle_visualizer_move(handler, body)
+                sent_request = upstream.call_args.args[0]
+                self.assertEqual(sent_request.get_header("X-auth-token"), token)
+                self.assertNotIn(token, sent_request.full_url)
+                self.assertEqual(handler.responses[0][0], 200)
+                lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                self.assertEqual(lease["carpetId"], command["id"])
+                self.assertEqual(lease["leaseId"], "browser-lease")
+                self.assertLessEqual(lease["expiresAtUnixMs"], __import__("time").time() * 1000 + 1000)
+                competing = HandlerStub(registry)
+                RequestHandler.handle_visualizer_move(competing, {**body, "leaseId": "other-browser"})
+                self.assertEqual(competing.responses[0][0], 409)
+                self.assertEqual(lease_path.read_text(encoding="utf-8"), json.dumps(lease))
+
+            unauthorized = HandlerStub(registry)
+            with patch("urllib.request.urlopen") as upstream:
+                RequestHandler.handle_visualizer_move(unauthorized, {"token": "unknown", "transports": []})
+                self.assertEqual(unauthorized.responses[0][0], 401)
+                upstream.assert_not_called()
+
+            observer = HandlerStub(registry)
+            observer.state.observer_token = "internal-observer-token"
+            with patch("urllib.request.urlopen", return_value=UpstreamResponse()) as upstream:
+                RequestHandler.handle_visualizer_move(observer, {"transports": []})
+                observer_request = upstream.call_args.args[0]
+                self.assertEqual(observer_request.get_header("X-auth-token"), "internal-observer-token")
+                self.assertEqual(observer.responses[0][0], 200)
+
+            read_only = HandlerStub(registry)
+            read_only.state.observer_token = "internal-observer-token"
+            with patch("urllib.request.urlopen") as upstream:
+                RequestHandler.handle_visualizer_move(read_only, {"transports": [{"id": "any", "acceleration": {"x": 1, "y": 0}}]})
+                self.assertEqual(read_only.responses[0][0], 403)
+                upstream.assert_not_called()
 
     def test_world_catalog_and_no_immediate_repeat(self):
         worlds = load_world_catalog()
@@ -69,6 +165,26 @@ class HubTests(unittest.TestCase):
             self.assertEqual(registry.resolve_token("private-secret"), first["team_id"])
             self.assertIsNone(registry.resolve_token("not-registered"))
             self.assertIn("private-secret", path.read_text(encoding="utf-8"))
+
+    def test_team_creation_issues_secret_and_names_are_unique_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = TeamRegistry(Path(directory) / "registry.json")
+            created = registry.create("New Team")
+            self.assertEqual(created["name"], "New Team")
+            self.assertGreaterEqual(len(created["token"]), 32)
+            self.assertEqual(registry.resolve_token(created["token"]), created["team_id"])
+            with self.assertRaisesRegex(ValueError, "already taken"):
+                registry.create("new team")
+            with self.assertRaisesRegex(ValueError, "already taken"):
+                registry.register("other-token", "NEW TEAM")
+
+    def test_registration_form_requests_name_and_explains_one_time_token(self):
+        from hub import register_html
+
+        page = register_html().decode("utf-8")
+        self.assertIn('JSON.stringify({name:document.querySelector', page)
+        self.assertIn("Токен показывается только один раз", page)
+        self.assertNotIn('id=t type=password', page)
 
     def test_votes_are_one_per_team_changeable_and_consumed_for_next_world(self):
         state = HubState.__new__(HubState)

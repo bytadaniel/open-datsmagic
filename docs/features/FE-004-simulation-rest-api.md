@@ -1,155 +1,67 @@
 ---
 id: FE-004
-title: "REST API эндпоинты состояния мира и управления ковром"
-module: "server::api"
-author: "AI Agent & Backend Engineer"
+title: "Единый внешний API игровой арены"
+module: "lib/arena-server::api"
+author: "DatsMagic Team"
 created_at: "2026-09-30"
-updated_at: "2026-09-30"
+updated_at: "2026-10-03"
 status: "approved"
-version: 1.0
-tags:
-  - rust
-  - axum
-  - api
-  - rest
-  - json
-related_domain_records:
-  - DR-001
-related_test_cases:
-  - TC-API-01
-  - TC-API-02
-  - TC-API-03
----
-# FE-004: REST API эндпоинты состояния мира и управления ковром
-
-> Описание реализации сетевого интерфейса HTTP REST API на фреймворке Axum на языке Rust, валидации команд, авторизации по токену и обработки Rate Limit.
-
+version: 2.0
+tags: [rust, axum, api, rest, json, auth]
+related_domain_records: [DR-001, DR-009, DR-010]
 ---
 
-## 1. Контекст и бизнес-цель
+# FE-004: Единый внешний API игровой арены
 
-Фича обеспечивает сетевое взаимодействие игроков и клиента визуализации с игровым сервером DatsMagic согласно контрактам из [`docs/mechanics.md`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/mechanics.md#4-контракты-api-спецификация-json) и требованиям [`DR-001`](file:///Users/d.byta/Documents/Code/dats/datsmagic/docs/domain/DR-001-game-loop-and-state.md).
+## 1. Контекст
 
----
+Игровое API должно соответствовать совместимому контракту Desert. Оно используется игроками и визуализатором и не должно дублироваться альтернативными маршрутами состояния и управления. Hub предоставляет отдельный control-plane API, не предназначенный для управления коврами.
 
-## 2. Архитектурное решение
+## 2. Контракт
 
-Сетевой слой реализуется с использованием веб-фреймворка `axum` и асинхронного парсера `serde_json`.
+Единственный публичный игровой маршрут:
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant AuthMiddleware
-    participant RateLimiter
-    participant ApiRouter
-    participant EngineState
-
-    Client->>AuthMiddleware: HTTP Request + Header X-Auth-Token
-    AuthMiddleware->>RateLimiter: Check token & request rate
-    RateLimiter-->>Client: 429 Too Many Requests (if exceeded)
-    RateLimiter->>ApiRouter: Forward valid request
-    ApiRouter->>EngineState: Read snapshot / Submit command
-    EngineState-->>ApiRouter: Snapshot JSON / Status accepted
-    ApiRouter-->>Client: 200 OK (JSON)
+```http
+POST /play/magcarp/player/move
+X-Auth-Token: <выданный-токен>
+Content-Type: application/json
 ```
 
----
+Запрос содержит `{"transports":[{"id":"<carpet-id>","acceleration":{"x":0,"y":0}}]}`. Ответ `200` — полный снимок Desert, включая собственные `transports`, `bounties`, `anomalies`, `enemies`, `mapSize`, параметры управления, `points` и `errors`. `{ "transports": [] }` создаёт/наблюдает флот без отправки новой команды. Полная таблица DTO, поля каждого объекта, примеры и HTTP ошибки являются частью пользовательской [документации игрового API](../components/arena-hub/api.md).
 
-## 3. Спецификация DTO (Rust)
+## 3. Авторизация и идентификация
 
-```rust
-use serde::{Deserialize, Serialize};
-use crate::physics::Vec2;
-use crate::spatial::{Treasure, Anomaly};
+- Игрок выбирает уникальное имя команды на Hub; токен генерируется Hub криптографически случайно и показывается один раз.
+- Клиент-игрок всегда проверяется по приватному реестру; отсутствующий/неизвестный пользовательский токен — `401 Unauthorized`.
+- Единственное внутреннее исключение — случайный `DATS_OBSERVER_TOKEN`, который Hub создаёт на время своего процесса и передаёт только процессу арены. Он доступен только Hub-прокси для публичного просмотра, отклоняет любые команды и не создаёт игрока/флот.
+- Токен нельзя передавать в URL или публиковать. В состоянии арены и leaderboard используются fingerprint команды и непрозрачные IDs, а не сырой токен.
+- `POST /api/teams` — endpoint Hub для регистрации/переименования и не является игровым маршрутом.
 
-/// Запрос команды игрока
-#[derive(Deserialize, Debug)]
-pub struct CommandRequestDto {
-    pub acceleration: Vec2,
-}
+## 4. Частота и обработка ошибок
 
-/// Подтверждение приема команды
-#[derive(Serialize, Debug)]
-pub struct CommandResponseDto {
-    pub status: &'static str, // "accepted"
-}
+Тик равен 200 мс. В одном тике сервер принимает не более одного непустого пакета команд на команду; дубликат получает `429`. Некорректные элементы отдельного флота записываются в `errors[]`; валидные элементы пакета могут быть приняты. Если `acceleration` пропущено, сервер сохраняет последнюю принятую команду; для явного нулевого тягового вектора надо отправить `(0,0)`.
 
-/// Снимок состояния для ответа GET /api/game/state
-#[derive(Serialize, Debug)]
-pub struct GameStateResponseDto {
-    pub tick: u64,
-    pub game_status: String,
-    pub player: PlayerDto,
-    pub treasures: Vec<Treasure>,
-    pub anomalies: Vec<Anomaly>,
-    pub enemies: Vec<EnemyDto>,
-}
+Основные HTTP ошибки: `400` — неверный JSON/неактивная сессия/уничтоженный флот, `401` — отсутствие или неизвестный токен, `429` — пакет уже принят в этом тике, `500` — внутренняя ошибка.
 
-#[derive(Serialize, Debug)]
-pub struct PlayerDto {
-    pub id: String,
-    pub score: u32,
-    pub status: String,
-    pub position: Vec2,
-    pub velocity: Vec2,
-    pub max_acceleration: f64,
-    pub max_velocity: f64,
-}
+## 5. Реально поддерживаемые действия
 
-#[derive(Serialize, Debug)]
-pub struct EnemyDto {
-    pub id: String,
-    pub position: Vec2,
-    pub velocity: Vec2,
-}
-```
+В запросе совместимо описаны `acceleration`, `activateShield` и `attack`, но в текущей версии игровое действие — только `acceleration`; shield/attack игнорируются. В ответе поля боя и щита сохранены для совместимости и могут содержать настройки мира или нули — сами по себе они не означают, что действие реализовано.
 
----
+На `Transport` передаются три динамических вектора: фактическая скорость `velocity`, последнее эффективное управляющее ускорение `selfAcceleration` и текущая результирующая сила аномалий `anomalyAcceleration`. Координаты `x`,`y` — положение, не вектор скорости.
 
-## 4. Эндпоинты API
+## 6. Критерии приемки
 
-| Метод | Путь                | Описание                                                              | Заголовки                                            |
-| :--------- | :---------------------- | :---------------------------------------------------------------------------- | :------------------------------------------------------------ |
-| `GET`    | `/api/game/state`     | Получение текущего состояния симуляции     | `X-Auth-Token: <token>`                                     |
-| `POST`   | `/api/carpet/command` | Отправка вектора ускорения на текущий тик | `X-Auth-Token: <token>`, `Content-Type: application/json` |
-
----
-
-## 5. Обработка ошибок и HTTP статусы
-
-| Код ошибки       | Статус                        | Условие возникновения                                                  | Формат ответа                                |
-| :------------------------ | :---------------------------------- | :----------------------------------------------------------------------------------------- | :------------------------------------------------------- |
-| `200 OK`                | Успех                          | Корректный запрос                                                          | JSON-ответ                                          |
-| `400 Bad Request`       | Неверный запрос       | Поля`x`, `y` содержат `NaN`, `Infinity` или неверный тип | `{"error": "invalid vector values"}`                   |
-| `401 Unauthorized`      | Ошибка авторизации | Отсутствует или неверен заголовок`X-Auth-Token`            | `{"error": "unauthorized"}`                            |
-| `429 Too Many Requests` | Превышен лимит         | Отправлено$>1$ команды за один тик                             | `{"error": "rate limit exceeded: 1 command per tick"}` |
-
----
-
-## 6. План реализации
-
-- [X] **Шаг 1:** Сконфигурировать маршрутизатор `axum::Router`.
-- [X] **Шаг 2:** Реализовать middleware валидации заголовка `X-Auth-Token`.
-- [X] **Шаг 3:** Реализовать обработчик `GET /api/game/state`.
-- [X] **Шаг 4:** Реализовать обработчик `POST /api/carpet/command` с проверкой на дублирование за тик.
-- [X] **Шаг 5:** Написать e2e-тесты на проверку кодов ответов HTTP.
-
----
-
-## 7. Тестирование
-
-### Unit- и E2E-тесты
-
-- `test_unauthorized_without_token`: запрос без `X-Auth-Token` возвращает HTTP 401.
-- `test_nan_vector_rejected`: команда с `{"x": "NaN"}` отклоняется с кодом 400.
-- `test_command_rate_limit_429`: две последовательные команды в рамках одного тика возвращают 429 на второй запрос.
-- `test_get_game_state_format`: возвращаемый JSON полностью валидируется по схеме `docs/mechanics.md`.
-
----
+- [x] Работает единственный игровой endpoint `POST /play/magcarp/player/move`.
+- [x] Endpoint возвращает контракт Desert с полным состоянием мира и флота.
+- [x] Неизвестный и отсутствующий токен даёт `401`.
+- [x] Внутренний observer token возвращает весь мир read-only и не создаёт состояние игрока.
+- [x] Один пакет ускорений на команду за тик; повтор даёт `429`.
+- [x] Полный контракт, пример запроса/ответа и ошибки описаны в web-документации Hub.
 
 ## История изменений
 
-| Версия | Дата   | Автор | Изменение                                                                                  |
-| :----------- | :--------- | :--------- | :-------------------------------------------------------------------------------------------------- |
-| 1.0          | 2026-09-30 | AI Agent   | Спецификация сетевых эндпоинтов и обработки запросов |
-| 1.1          | 2026-09-30 | AI Agent   | Реализация REST API на Axum, DTO, auth middleware, rate limit и e2e-тестов       |
+| Версия | Дата | Изменение |
+|---|---|---|
+| 1.0 | 2026-09-30 | Исходная спецификация отдельных state/command routes (устарела). |
+| 2.0 | 2026-10-03 | Утверждён единый Desert move API, Hub-issued token и обязательная проверка реестра. |
+| 2.1 | 2026-10-03 | Добавлен скрытый read-only observer credential для Hub без дополнительного игрового маршрута. |

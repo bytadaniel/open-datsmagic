@@ -194,7 +194,8 @@ fn make_file(
         teams.push(LeaderboardEntry {
             rank: 0,
             team,
-            team_id: token_fingerprint(&player_id),
+            // Player IDs are token fingerprints; raw tokens are never retained in game state.
+            team_id: player_id.clone(),
             gold: u64::from(player.score),
             gold_collected,
             carpets_lost,
@@ -217,16 +218,6 @@ fn make_file(
         updated_at_unix_ms: now_unix_ms(),
         teams,
     }
-}
-
-fn token_fingerprint(token: &str) -> String {
-    let hash = token
-        .as_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325_u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        });
-    format!("{hash:016x}")
 }
 
 async fn write_atomic(
@@ -288,22 +279,33 @@ mod tests {
     use super::*;
     use crate::engine::state::{CarpetState, GameState};
 
+    fn fingerprint(token: &str) -> String {
+        let hash = token
+            .as_bytes()
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        format!("{hash:016x}")
+    }
+
     #[test]
     fn leaderboard_sorts_teams_and_never_serializes_auth_tokens() {
         let mut state = GameState::new();
-        let mut first =
-            crate::engine::state::PlayerState::new("secret-alpha".into(), 0.0, 0.0, 40.0, 110.0);
+        let first_id = fingerprint("secret-alpha");
+        let first_carpet = format!("{first_id}_0");
+        let mut first = crate::engine::state::PlayerState::new(first_id, 0.0, 0.0, 40.0, 110.0);
         first.score = 70;
         first.gold_collected_total = 100;
         first.distance_travelled = 123.5;
         first.carpets.insert(
-            "secret-alpha_0".into(),
-            CarpetState::new("secret-alpha_0", 0.0, 0.0, 40.0, 110.0),
+            first_carpet.clone(),
+            CarpetState::new(&first_carpet, 0.0, 0.0, 40.0, 110.0),
         );
-        first.carpets.get_mut("secret-alpha_0").unwrap().death_count = 2;
+        first.carpets.get_mut(&first_carpet).unwrap().death_count = 2;
         state.world.players.insert(first.id.clone(), first);
-        let mut second =
-            crate::engine::state::PlayerState::new("secret-beta".into(), 0.0, 0.0, 40.0, 110.0);
+        let second_id = fingerprint("secret-beta");
+        let mut second = crate::engine::state::PlayerState::new(second_id, 0.0, 0.0, 40.0, 110.0);
         second.score = 120;
         state.world.players.insert(second.id.clone(), second);
 
