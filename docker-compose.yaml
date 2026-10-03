@@ -1,0 +1,67 @@
+services:
+  hub:
+    image: stadmagic-hub:local
+    build:
+      context: .
+      dockerfile: apps/arena-hub/Dockerfile
+    command: ["python3", "/app/apps/arena-hub/hub.py"]
+    restart: unless-stopped
+    environment:
+      HUB_HOST: 0.0.0.0
+      HUB_PORT: 8090
+      HUB_DATA_DIR: /app/data
+      DATS_WORLDS_PATH: /app/assets/worlds.json
+      ARENA_HOST: arena-runtime
+      ARENA_PORT: 8080
+      ARENA_PUBLIC_URL: ${ARENA_PUBLIC_URL:-http://localhost:${ARENA_HOST_PORT:-8080}}
+      ARENA_LIFECYCLE_MODE: runtime-api
+      ARENA_CONTROL_URL: http://arena-runtime:9001
+      ARENA_CONTROL_TOKEN: ${ARENA_CONTROL_TOKEN:?Set ARENA_CONTROL_TOKEN in .env}
+    ports:
+      - "${HUB_BIND_ADDRESS:-127.0.0.1}:${HUB_HOST_PORT:-8090}:8090"
+    volumes:
+      - stadmagic-data:/app/data
+      - ./lib/bot-variants/player_2:/app/lib/bot-variants/player_2
+      - ./assets/worlds.json:/app/assets/worlds.json:ro
+    depends_on:
+      arena-runtime:
+        condition: service_healthy
+    networks:
+      - stadmagic
+
+  arena-runtime:
+    image: stadmagic-arena-runtime:local
+    build:
+      context: .
+      dockerfile: apps/arena-runtime/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 20s
+    environment:
+      ARENA_CONTROL_TOKEN: ${ARENA_CONTROL_TOKEN:?Set ARENA_CONTROL_TOKEN in .env}
+      ARENA_CONTROL_HOST: 0.0.0.0
+      ARENA_CONTROL_PORT: 9001
+      ARENA_GAME_HOST: 0.0.0.0
+      ARENA_GAME_PORT: 8080
+      HUB_DATA_DIR: /app/data
+      DATS_WORLDS_PATH: /app/assets/worlds.json
+    ports:
+      - "${ARENA_BIND_ADDRESS:-127.0.0.1}:${ARENA_HOST_PORT:-8080}:8080"
+    volumes:
+      - stadmagic-data:/app/data
+      - ./assets/worlds.json:/app/assets/worlds.json:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    networks:
+      - stadmagic
+
+volumes:
+  stadmagic-data:
+    name: stadmagic-data
+
+networks:
+  stadmagic:
+    name: stadmagic-net

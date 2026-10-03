@@ -29,6 +29,7 @@ var/
 wheels/
 *.egg-info/
 apps/arena-hub/data/
+apps/arena-runtime/data/
 arena_hub/data/
 current_world.json
 leaderboard.json
@@ -42,3 +43,4 @@ leaderboard.json
 *.swp
 *.swo
 .DS_Store
+.env

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import hub as hub_module
 
 from hub import (
     HubState,
@@ -19,10 +20,28 @@ from hub import (
     pick_world,
     token_id,
     RequestHandler,
+    start_runtime_arena,
 )
 
 
 class HubTests(unittest.TestCase):
+    def test_runtime_api_receives_world_run_contract_with_internal_secret(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"status":"running","pid":4321}'
+
+        with patch.object(hub_module, "ARENA_CONTROL_TOKEN", "runtime-secret"), \
+             patch.object(hub_module, "RUN_SECONDS", 75), \
+             patch("hub.urllib.request.urlopen", return_value=Response()) as upstream:
+            arena_process = start_runtime_arena("quiet-harbor-01", "world_quiet-harbor-01_1_1", "a" * 32, "observer-secret")
+        request = upstream.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(request.get_header("X-arena-control-token"), "runtime-secret")
+        self.assertEqual(payload["world_id"], "quiet-harbor-01")
+        self.assertEqual(payload["duration_sec"], 75)
+        self.assertEqual(arena_process.pid, 4321)
+
     def test_hub_pages_use_live_layout_and_requested_leaderboard_labels(self):
         state = HubState.__new__(HubState)
         state.lock = __import__("threading").RLock()

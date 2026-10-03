@@ -41,9 +41,13 @@ HUB_PORT = int(os.environ.get("HUB_PORT", "8090"))
 ARENA_HOST = os.environ.get("ARENA_HOST", "127.0.0.1")
 ARENA_PORT = int(os.environ.get("ARENA_PORT", "8080"))
 ARENA_PUBLIC_HOST = os.environ.get("ARENA_PUBLIC_HOST", "127.0.0.1")
+ARENA_PUBLIC_URL = os.environ.get("ARENA_PUBLIC_URL", "").rstrip("/")
 RUN_SECONDS = int(os.environ.get("HUB_RUN_SECONDS", "1200"))
 POLL_SECONDS = float(os.environ.get("HUB_POLL_SECONDS", "1"))
 FIXED_WORLD_ID = os.environ.get("HUB_FIXED_WORLD_ID")
+ARENA_LIFECYCLE_MODE = os.environ.get("ARENA_LIFECYCLE_MODE", "process")
+ARENA_CONTROL_URL = os.environ.get("ARENA_CONTROL_URL", "http://127.0.0.1:9001").rstrip("/")
+ARENA_CONTROL_TOKEN = os.environ.get("ARENA_CONTROL_TOKEN", "")
 METRICS_FIELDS = ("gold", "gold_collected", "carpets_lost", "distance_travelled")
 
 
@@ -76,13 +80,16 @@ def load_world_catalog(path: Path = WORLDS_PATH) -> list[dict[str, Any]]:
 
 
 def load_world_configs(world_catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    env = os.environ.copy()
-    env["DATS_WORLDS_PATH"] = str(WORLDS_PATH)
-    result = subprocess.run(
-        [str(ARENA_BIN), "--world-catalog-json"], cwd=ROOT, env=env,
-        check=True, capture_output=True, text=True, timeout=20,
-    )
-    worlds = json.loads(result.stdout)
+    if ARENA_LIFECYCLE_MODE == "runtime-api":
+        worlds = arena_runtime_request("GET", "/internal/worlds").get("worlds")
+    else:
+        env = os.environ.copy()
+        env["DATS_WORLDS_PATH"] = str(WORLDS_PATH)
+        result = subprocess.run(
+            [str(ARENA_BIN), "--world-catalog-json"], cwd=ROOT, env=env,
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+        worlds = json.loads(result.stdout)
     if not isinstance(worlds, list) or len(worlds) != len(world_catalog):
         raise RuntimeError("server returned an invalid world configuration catalog")
     if [world.get("id") for world in worlds] != [world.get("id") for world in world_catalog]:
@@ -448,9 +455,85 @@ class HubState:
         with self.lock:
             result = dict(self.arena)
         if result["world_number"] is not None:
-            result["url"] = f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}"
+            result["url"] = ARENA_PUBLIC_URL or f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}"
             result["seconds_remaining"] = max(0, int((result.get("ends_at") or time.time()) - time.time()))
         return result
+
+
+def arena_runtime_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not ARENA_CONTROL_TOKEN:
+        raise RuntimeError("ARENA_CONTROL_TOKEN must be configured for runtime-api mode")
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"{ARENA_CONTROL_URL}{path}", data=body,
+        headers={"X-Arena-Control-Token": ARENA_CONTROL_TOKEN, "Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read()).get("error", str(exc))
+        except (json.JSONDecodeError, AttributeError):
+            detail = str(exc)
+        raise RuntimeError(f"arena runtime returned HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"arena runtime is unavailable: {exc}") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("arena runtime returned an invalid response")
+    return result
+
+
+class ArenaRuntimeProcess:
+    """Popen-compatible handle for a Rust arena process managed by the runtime container."""
+
+    def __init__(self, run_id: str, pid: int):
+        self.run_id = run_id
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        status = arena_runtime_request("GET", f"/internal/arena/status?run_id={self.run_id}")
+        if status.get("running"):
+            return None
+        code = status.get("exit_code")
+        self.returncode = int(code) if code is not None else 1
+        return self.returncode
+
+    def send_signal(self, sig: int) -> None:
+        if sig not in (signal.SIGINT, signal.SIGTERM):
+            raise ValueError("arena runtime only accepts graceful stop signals")
+        arena_runtime_request("POST", "/internal/arena/stop", {"run_id": self.run_id})
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("arena runtime", timeout)
+            time.sleep(0.1)
+
+    def kill(self) -> None:
+        try:
+            arena_runtime_request("POST", "/internal/arena/stop", {"run_id": self.run_id})
+        except RuntimeError:
+            pass
+
+
+def start_runtime_arena(world_id: str, arena_name: str, run_id: str, observer_token: str) -> ArenaRuntimeProcess:
+    result = arena_runtime_request("POST", "/internal/arena/start", {
+        "run_id": run_id,
+        "world_id": world_id,
+        "arena_name": arena_name,
+        "observer_token": observer_token,
+        "duration_sec": RUN_SECONDS,
+    })
+    if result.get("status") != "running" or int(result.get("pid", 0)) <= 0:
+        raise RuntimeError("arena runtime did not confirm process startup")
+    return ArenaRuntimeProcess(run_id, int(result["pid"]))
 
 
 def pick_world(
@@ -479,7 +562,7 @@ def read_report(path: Path) -> list[dict[str, Any]] | None:
         return None
 
 
-async def stop_process(process: subprocess.Popen[bytes]) -> None:
+async def stop_process(process: Any) -> None:
     if process.poll() is not None:
         return
     try:
@@ -531,10 +614,15 @@ async def run_arena_loop(state: HubState) -> None:
             with log_path.open("ab") as log:
                 log.write(f"\n=== {utc_now()} start {arena_name} world={world_id} run={run_id} ===\n".encode())
                 log.flush()
-                process = subprocess.Popen(
-                    [str(ARENA_BIN)], cwd=ROOT, env=env,
-                    stdout=log, stderr=subprocess.STDOUT, start_new_session=(os.name != "nt"),
-                )
+                if ARENA_LIFECYCLE_MODE == "runtime-api":
+                    process = start_runtime_arena(world_id, arena_name, run_id, state.observer_token)
+                elif ARENA_LIFECYCLE_MODE == "process":
+                    process = subprocess.Popen(
+                        [str(ARENA_BIN)], cwd=ROOT, env=env,
+                        stdout=log, stderr=subprocess.STDOUT, start_new_session=(os.name != "nt"),
+                    )
+                else:
+                    raise RuntimeError(f"unsupported ARENA_LIFECYCLE_MODE: {ARENA_LIFECYCLE_MODE}")
                 state.store.set_run(run_id, "running")
                 state.set_arena(status="running", pid=process.pid)
                 while time.time() < ends_epoch:
@@ -1022,7 +1110,11 @@ async def serve() -> None:
     world_catalog = load_world_catalog()
     if RUN_SECONDS <= 0 or POLL_SECONDS <= 0:
         raise RuntimeError("HUB_RUN_SECONDS and HUB_POLL_SECONDS must be > 0")
-    if not ARENA_BIN.is_file():
+    if ARENA_LIFECYCLE_MODE not in {"process", "runtime-api"}:
+        raise RuntimeError("ARENA_LIFECYCLE_MODE must be 'process' or 'runtime-api'")
+    if ARENA_LIFECYCLE_MODE == "runtime-api" and not ARENA_CONTROL_TOKEN:
+        raise RuntimeError("ARENA_CONTROL_TOKEN must be configured for runtime-api mode")
+    if ARENA_LIFECYCLE_MODE == "process" and not ARENA_BIN.is_file():
         raise RuntimeError(f"Arena executable not found: {ARENA_BIN}. Build it with scripts/run_hub.sh")
     state = HubState(load_world_configs(world_catalog))
     handler = type("BoundRequestHandler", (RequestHandler,), {"state": state})

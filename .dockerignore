@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+**/target
+**/node_modules
+**/__pycache__
+**/*.py[cod]
+apps/arena-hub/data
+lib/bot-variants/player_1/node_modules
+lib/bot-variants/player_2/token.txt
+lib/bot-variants/player_2/manual_control*.json
+*.log
