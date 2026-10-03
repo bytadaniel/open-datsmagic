@@ -308,6 +308,18 @@ mod tests {
             .unwrap();
         assert_eq!(king.config.carpet_count, 10);
         assert!(!king.config.enable_respawn);
+
+        let close_core = worlds
+            .iter()
+            .find(|world| world.id == "near-core-field")
+            .unwrap();
+        assert_eq!(close_core.config.arena_width, 12_000.0);
+        assert!(
+            close_core.config.anomaly_core_radius_min
+                >= 0.8 * close_core.config.anomaly_effect_radius_max
+        );
+        assert!(close_core.config.anomaly_core_radius_max <= 400.0);
+        assert!(close_core.config.anomaly_effect_radius_max <= 500.0);
     }
 
     #[test]

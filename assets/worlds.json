@@ -2,8 +2,8 @@
     "worlds": [
         {
             "id": "quiet-harbor-01",
-            "name": "Тихая бухта",
-            "description": "Редкая передышка по опасностям, но золота здесь мало: каждая монета на счету.",
+            "name": "Бедная бухта",
+            "description": "Всего 600 монет на небольшой арене и восемь слабых аномалий. Это мир про аккуратную работу с редкой добычей, а не про гонку за плотным полем монет.",
             "config": {
                 "arena_width": 9000,
                 "arena_height": 9000,
@@ -20,47 +20,9 @@
             }
         },
         {
-            "id": "quiet-harbor-02",
-            "name": "Тихая бухта",
-            "description": "Спокойные воды и широкая арена; редкие аномалии оставляют пространство для сбора.",
-            "config": {
-                "arena_width": 11000,
-                "arena_height": 10000,
-                "anomaly_quota": 10,
-                "anomaly_speed_min": 15,
-                "anomaly_speed_max": 62,
-                "anomaly_force_min": 1.5,
-                "anomaly_force_max": 9,
-                "anomaly_force_outlier_probability": 0,
-                "friction": 0.96,
-                "bounty_quota": 6000,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "quiet-harbor-03",
-            "name": "Утренняя заводь",
-            "description": "Почти штиль и скудная добыча. Это один из самых бедных миров каталога.",
-            "config": {
-                "arena_width": 12000,
-                "arena_height": 10000,
-                "anomaly_quota": 6,
-                "anomaly_speed_min": 10,
-                "anomaly_speed_max": 48,
-                "anomaly_force_min": 1,
-                "anomaly_force_max": 7,
-                "anomaly_force_outlier_probability": 0,
-                "friction": 0.94,
-                "bounty_quota": 900,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "lonely-titans-01",
             "name": "Одинокие титаны",
-            "description": "На карте мало аномалий, но каждая может оказаться чудовищно сильной.",
+            "description": "На карте только пять аномалий, но у каждой высок шанс экстремальной силы — до 190. Их крупные зоны приходится обходить заранее.",
             "config": {
                 "arena_width": 14000,
                 "arena_height": 13000,
@@ -79,69 +41,9 @@
             }
         },
         {
-            "id": "lonely-titans-02",
-            "name": "Чёрные великаны",
-            "description": "Три-четыре огромных поля силы могут закрыть целый маршрут; обходи их заранее.",
-            "config": {
-                "arena_width": 16000,
-                "arena_height": 15000,
-                "anomaly_quota": 4,
-                "anomaly_speed_min": 25,
-                "anomaly_speed_max": 100,
-                "anomaly_force_min": 6,
-                "anomaly_force_max": 24,
-                "anomaly_force_outlier_probability": 0.9,
-                "anomaly_force_outlier_min": 100,
-                "anomaly_force_outlier_max": 220,
-                "anomaly_effect_radius_min": 500,
-                "anomaly_effect_radius_max": 2800,
-                "bounty_quota": 4800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "lonely-titans-03",
-            "name": "Дальние исполины",
-            "description": "Редкие исполины движутся небыстро, зато их притяжение или отталкивание почти непреодолимо.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 16000,
-                "anomaly_quota": 7,
-                "anomaly_speed_min": 15,
-                "anomaly_speed_max": 75,
-                "anomaly_force_min": 4,
-                "anomaly_force_max": 20,
-                "anomaly_force_outlier_probability": 0.8,
-                "anomaly_force_outlier_min": 90,
-                "anomaly_force_outlier_max": 205,
-                "anomaly_effect_radius_max": 3000,
-                "bounty_quota": 5200,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "storm-belt-01",
-            "name": "Грозовой пояс",
-            "description": "Плотный, быстрый поток аномалий. Свободные коридоры меняются постоянно.",
-            "config": {
-                "arena_width": 14000,
-                "arena_height": 13000,
-                "anomaly_quota": 55,
-                "anomaly_speed_min": 80,
-                "anomaly_speed_max": 240,
-                "anomaly_force_min": 8,
-                "anomaly_force_max": 36,
-                "bounty_quota": 4800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "storm-belt-02",
-            "name": "Грозовой пояс",
-            "description": "Много быстрых аномалий с широким воздействием; лишний раз не теряй скорость.",
+            "name": "Режущий шторм",
+            "description": "Шестьдесят восемь быстрых аномалий с зонами до 2 300 создают подвижные коридоры. Здесь опасность не в одной точке, а в постоянно меняющихся проходах.",
             "config": {
                 "arena_width": 16000,
                 "arena_height": 15000,
@@ -158,65 +60,9 @@
             }
         },
         {
-            "id": "storm-belt-03",
-            "name": "Рваный шторм",
-            "description": "Частые порывы несут аномалии через большую арену, оставляя лишь короткие окна для сбора.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 17000,
-                "anomaly_quota": 48,
-                "anomaly_speed_min": 110,
-                "anomaly_speed_max": 290,
-                "anomaly_force_min": 10,
-                "anomaly_force_max": 42,
-                "bounty_quota": 5000,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "slow-carpet-01",
-            "name": "Охотничьи угодья",
-            "description": "Ковры медленны, а аномалии быстры: от прямого преследования не уйти.",
-            "config": {
-                "arena_width": 12000,
-                "arena_height": 11000,
-                "max_velocity": 72,
-                "max_acceleration": 28,
-                "anomaly_quota": 28,
-                "anomaly_speed_min": 150,
-                "anomaly_speed_max": 290,
-                "anomaly_force_min": 8,
-                "anomaly_force_max": 34,
-                "bounty_quota": 5000,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "slow-carpet-02",
-            "name": "Тяжёлый флот",
-            "description": "Низкая скорость и умеренное ускорение делают ранний выбор маршрута особенно важным.",
-            "config": {
-                "arena_width": 14000,
-                "arena_height": 13000,
-                "max_velocity": 82,
-                "max_acceleration": 30,
-                "anomaly_quota": 32,
-                "anomaly_speed_min": 130,
-                "anomaly_speed_max": 270,
-                "anomaly_force_min": 7,
-                "anomaly_force_max": 32,
-                "friction": 0.965,
-                "bounty_quota": 5200,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "slow-carpet-03",
             "name": "Пыльная погоня",
-            "description": "Медленный ковёр против стремительных охотников и мягкого торможения.",
+            "description": "Скорость ковра ограничена 65, ускорение — 24, а аномалии разгоняются до 310. Уйти от преследования реактивным манёвром не получится — важен ранний выбор пути.",
             "config": {
                 "arena_width": 15000,
                 "arena_height": 14000,
@@ -233,28 +79,9 @@
             }
         },
         {
-            "id": "fast-carpet-01",
-            "name": "Шёлковый экспресс",
-            "description": "Ковер быстрый и мощный, аномалии умеренны. Ошибки на скорости дорого обходятся.",
-            "config": {
-                "arena_width": 14000,
-                "arena_height": 13000,
-                "max_velocity": 175,
-                "max_acceleration": 58,
-                "anomaly_quota": 22,
-                "anomaly_speed_min": 35,
-                "anomaly_speed_max": 150,
-                "anomaly_force_min": 5,
-                "anomaly_force_max": 25,
-                "bounty_quota": 5600,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "fast-carpet-02",
             "name": "Серебряный разгон",
-            "description": "Большая скорость и мощный газ позволяют агрессивно менять траекторию.",
+            "description": "Скорость ковра до 205 и ускорение 68 заметно выше обычных. Аномалии тоже сильнее стандартных, так что преимущество скорости помогает менять курс, но не делает столкновения безвредными.",
             "config": {
                 "arena_width": 16000,
                 "arena_height": 15000,
@@ -271,46 +98,9 @@
             }
         },
         {
-            "id": "fast-carpet-03",
-            "name": "Стрелы ветра",
-            "description": "Ковер разгоняется быстрее обычного, но и аномалии здесь не стоят на месте.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 17000,
-                "max_velocity": 190,
-                "max_acceleration": 72,
-                "anomaly_quota": 34,
-                "anomaly_speed_min": 70,
-                "anomaly_speed_max": 210,
-                "anomaly_force_min": 7,
-                "anomaly_force_max": 31,
-                "bounty_quota": 5800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "sticky-sands-01",
-            "name": "Липкие пески",
-            "description": "Трение быстро съедает скорость; ускорение приходится прикладывать почти постоянно.",
-            "config": {
-                "arena_width": 12000,
-                "arena_height": 11000,
-                "friction": 0.86,
-                "anomaly_quota": 30,
-                "anomaly_speed_min": 35,
-                "anomaly_speed_max": 170,
-                "anomaly_force_min": 6,
-                "anomaly_force_max": 30,
-                "bounty_quota": 5200,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "sticky-sands-02",
             "name": "Густая пыль",
-            "description": "Инерция почти не сохраняется, а широкие поля аномалий мешают спокойно разогнаться.",
+            "description": "Трение 0,82 быстро гасит инерцию. Тридцать восемь аномалий с зонами до 2 300 оставляют мало времени на повторный разгон после манёвра.",
             "config": {
                 "arena_width": 14000,
                 "arena_height": 13000,
@@ -328,27 +118,9 @@
             }
         },
         {
-            "id": "sticky-sands-03",
-            "name": "Сухое русло",
-            "description": "Средняя арена, сильное торможение и несколько особенно резких потоков.",
-            "config": {
-                "arena_width": 15000,
-                "arena_height": 13500,
-                "friction": 0.89,
-                "anomaly_quota": 34,
-                "anomaly_speed_min": 55,
-                "anomaly_speed_max": 220,
-                "anomaly_force_min": 7,
-                "anomaly_force_max": 38,
-                "bounty_quota": 5400,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "ice-field-01",
             "name": "Ледяная гладь",
-            "description": "Почти нет торможения: скорость сохраняется долго, так что начинай поворот заранее.",
+            "description": "Трение 0,996 почти сохраняет скорость. Здесь рано начатый разворот важнее резкой коррекции у самой цели.",
             "config": {
                 "arena_width": 16000,
                 "arena_height": 15000,
@@ -364,83 +136,9 @@
             }
         },
         {
-            "id": "ice-field-02",
-            "name": "Синий лёд",
-            "description": "Скользкая большая карта с подвижными аномалиями среднего размера.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 17000,
-                "friction": 0.998,
-                "anomaly_quota": 27,
-                "anomaly_speed_min": 40,
-                "anomaly_speed_max": 210,
-                "anomaly_force_min": 6,
-                "anomaly_force_max": 28,
-                "bounty_quota": 5600,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "ice-field-03",
-            "name": "Зеркальный лёд",
-            "description": "Самый долгий дрейф в каталоге; небольшие поправки будут влиять на маршрут много секунд.",
-            "config": {
-                "arena_width": 20000,
-                "arena_height": 18000,
-                "friction": 0.994,
-                "anomaly_quota": 30,
-                "anomaly_speed_min": 35,
-                "anomaly_speed_max": 190,
-                "anomaly_force_min": 5,
-                "anomaly_force_max": 30,
-                "bounty_quota": 5200,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "golden-tide-01",
-            "name": "Золотой прилив",
-            "description": "Монет больше обычного, аномалий немного. Хорошее место проверить дальнее планирование.",
-            "config": {
-                "arena_width": 14000,
-                "arena_height": 13000,
-                "anomaly_quota": 16,
-                "anomaly_speed_min": 25,
-                "anomaly_speed_max": 130,
-                "anomaly_force_min": 4,
-                "anomaly_force_max": 21,
-                "bounty_quota": 10000,
-                "bounty_base_value": 40,
-                "bounty_max_value": 1600,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "golden-tide-02",
-            "name": "Золотой прилив",
-            "description": "Богатая арена с широким разбросом добычи и умеренными силами.",
-            "config": {
-                "arena_width": 16000,
-                "arena_height": 15000,
-                "anomaly_quota": 20,
-                "anomaly_speed_min": 35,
-                "anomaly_speed_max": 150,
-                "anomaly_force_min": 5,
-                "anomaly_force_max": 23,
-                "bounty_quota": 11000,
-                "bounty_base_value": 35,
-                "bounty_max_value": 1800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "golden-tide-03",
             "name": "Янтарный берег",
-            "description": "Золото распределено по просторной арене; у окраин встречаются более сильные потоки.",
+            "description": "Максимальные 12 000 монет в каталоге на просторной карте. При этом 24 аномалии движутся быстро, поэтому богатые участки не обязательно безопасны.",
             "config": {
                 "arena_width": 18000,
                 "arena_height": 16000,
@@ -457,28 +155,9 @@
             }
         },
         {
-            "id": "wide-maze-01",
-            "name": "Широкий лабиринт",
-            "description": "Аномалий и полей воздействия много, но арена оставляет несколько путей обхода.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 18000,
-                "anomaly_quota": 52,
-                "anomaly_speed_min": 45,
-                "anomaly_speed_max": 190,
-                "anomaly_force_min": 8,
-                "anomaly_force_max": 36,
-                "anomaly_effect_radius_min": 650,
-                "anomaly_effect_radius_max": 2800,
-                "bounty_quota": 4800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "wide-maze-02",
             "name": "Опасные проливы",
-            "description": "Широкие поля аномалий формируют узкие проливы между безопасными маршрутами.",
+            "description": "Зоны воздействия достигают 3 200 при 44 аномалиях. Их перекрытия образуют проходы, которые могут закрываться и открываться по мере движения поля.",
             "config": {
                 "arena_width": 20000,
                 "arena_height": 18000,
@@ -495,62 +174,9 @@
             }
         },
         {
-            "id": "wide-maze-03",
-            "name": "Тихий лабиринт",
-            "description": "Аномалии не самые быстрые, зато их зоны накладываются и ограничивают пространство.",
-            "config": {
-                "arena_width": 17000,
-                "arena_height": 16000,
-                "anomaly_quota": 58,
-                "anomaly_speed_min": 30,
-                "anomaly_speed_max": 165,
-                "anomaly_force_min": 7,
-                "anomaly_force_max": 33,
-                "anomaly_effect_radius_min": 600,
-                "anomaly_effect_radius_max": 2700,
-                "bounty_quota": 5000,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "edge-gales-01",
-            "name": "Краевые шквалы",
-            "description": "Быстрые аномалии гонят к границам; держись подальше от края без пути отхода.",
-            "config": {
-                "arena_width": 15000,
-                "arena_height": 14000,
-                "anomaly_quota": 32,
-                "anomaly_speed_min": 180,
-                "anomaly_speed_max": 320,
-                "anomaly_force_min": 8,
-                "anomaly_force_max": 36,
-                "bounty_quota": 5000,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
-            "id": "edge-gales-02",
-            "name": "Попутный ветер",
-            "description": "Порывы аномалий быстры и сильны: они могут как ускорить сбор, так и сорвать курс.",
-            "config": {
-                "arena_width": 18000,
-                "arena_height": 16000,
-                "anomaly_quota": 38,
-                "anomaly_speed_min": 200,
-                "anomaly_speed_max": 350,
-                "anomaly_force_min": 10,
-                "anomaly_force_max": 42,
-                "bounty_quota": 4800,
-                "enable_spawner": true,
-                "enable_coin_spawner": true
-            }
-        },
-        {
             "id": "edge-gales-03",
             "name": "Северный срыв",
-            "description": "Самые скоростные аномалии каталога требуют заранее планировать безопасную траекторию.",
+            "description": "Аномалии движутся со скоростью до 380 и иногда достигают силы 120. На самой большой арене каталога главная угроза — потерять контроль у границы.",
             "config": {
                 "arena_width": 20000,
                 "arena_height": 19000,
@@ -566,44 +192,278 @@
                 "enable_spawner": true,
                 "enable_coin_spawner": true
             }
+        },
+        {
+            "id": "dead-calm-crossing",
+            "name": "Мёртвый штиль",
+            "description": "Всего четыре медленные и слабые аномалии на карте с 7 000 монет. Основная сложность — длинный путь между целями, а не борьба с сильным полем.",
+            "config": {
+                "arena_width": 16000,
+                "arena_height": 16000,
+                "anomaly_quota": 4,
+                "anomaly_speed_min": 0,
+                "anomaly_speed_max": 18,
+                "anomaly_force_min": 0.5,
+                "anomaly_force_max": 4,
+                "anomaly_effect_radius_min": 250,
+                "anomaly_effect_radius_max": 700,
+                "friction": 0.997,
+                "bounty_quota": 7000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "permanent-drift",
+            "name": "Вечный дрейф",
+            "description": "Трение равно 1: скорость сама не затухает. На вытянутой карте даже небольшая ошибка направления продолжает влиять на маршрут, пока ковер не скорректирует её.",
+            "config": {
+                "arena_width": 10000,
+                "arena_height": 18000,
+                "max_velocity": 150,
+                "max_acceleration": 34,
+                "friction": 1,
+                "anomaly_quota": 10,
+                "anomaly_speed_min": 20,
+                "anomaly_speed_max": 100,
+                "anomaly_force_min": 2,
+                "anomaly_force_max": 12,
+                "bounty_quota": 6000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "long-channel",
+            "name": "Длинный канал",
+            "description": "Арена 8 000 на 20 000 вытянута почти в линию. Поперечный перелёт быстро приводит к границе, а длинная ось оставляет пространство для маршрута.",
+            "config": {
+                "arena_width": 8000,
+                "arena_height": 20000,
+                "anomaly_quota": 18,
+                "anomaly_speed_min": 35,
+                "anomaly_speed_max": 145,
+                "anomaly_force_min": 4,
+                "anomaly_force_max": 20,
+                "bounty_quota": 6500,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "needle-front",
+            "name": "Игольный фронт",
+            "description": "Двадцать восемь аномалий разгоняются до 330, но их области воздействия узкие, а ядра малы. Опасно именно прямое пересечение с быстрым ядром.",
+            "config": {
+                "arena_width": 14000,
+                "arena_height": 13000,
+                "anomaly_quota": 28,
+                "anomaly_speed_min": 150,
+                "anomaly_speed_max": 330,
+                "anomaly_core_radius_min": 10,
+                "anomaly_core_radius_max": 16,
+                "anomaly_effect_radius_min": 220,
+                "anomaly_effect_radius_max": 850,
+                "anomaly_force_min": 8,
+                "anomaly_force_max": 32,
+                "bounty_quota": 5200,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "near-core-field",
+            "name": "Близкий контур",
+            "description": "Ядра почти заполняют собственную область воздействия: радиус ядра 240–260 при зоне 270–290. Сами аномалии остаются небольшими, а опасная граница выражена чётко.",
+            "config": {
+                "arena_width": 12000,
+                "arena_height": 12000,
+                "anomaly_quota": 18,
+                "anomaly_speed_min": 25,
+                "anomaly_speed_max": 125,
+                "anomaly_core_radius_min": 240,
+                "anomaly_core_radius_max": 260,
+                "anomaly_effect_radius_min": 270,
+                "anomaly_effect_radius_max": 290,
+                "anomaly_force_min": 7,
+                "anomaly_force_max": 24,
+                "anomaly_force_outlier_probability": 0,
+                "bounty_quota": 5500,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "broad-gravity",
+            "name": "Широкое тяготение",
+            "description": "Шесть медленных аномалий действуют на расстоянии до 5 000, но без сверхсильных выбросов. Их влияние начинается задолго до встречи с ядром.",
+            "config": {
+                "arena_width": 16000,
+                "arena_height": 15000,
+                "anomaly_quota": 6,
+                "anomaly_speed_min": 12,
+                "anomaly_speed_max": 60,
+                "anomaly_effect_radius_min": 2500,
+                "anomaly_effect_radius_max": 5000,
+                "anomaly_force_min": 3,
+                "anomaly_force_max": 14,
+                "anomaly_force_outlier_probability": 0,
+                "bounty_quota": 5600,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "singularity-basin",
+            "name": "Бассейн сингулярностей",
+            "description": "Всего пять аномалий, но сила каждой гарантированно попадает в экстремальный диапазон 130–250. Их зоны не исполинские, поэтому опасность локальна и её можно заранее распознать.",
+            "config": {
+                "arena_width": 13000,
+                "arena_height": 13000,
+                "anomaly_quota": 5,
+                "anomaly_speed_min": 15,
+                "anomaly_speed_max": 75,
+                "anomaly_force_min": 5,
+                "anomaly_force_max": 18,
+                "anomaly_force_outlier_probability": 1,
+                "anomaly_force_outlier_min": 130,
+                "anomaly_force_outlier_max": 250,
+                "anomaly_effect_radius_min": 400,
+                "anomaly_effect_radius_max": 1500,
+                "bounty_quota": 4500,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "slow-respawn-frontier",
+            "name": "Долгое возвращение",
+            "description": "После гибели ковер ждёт 12 секунд до возрождения — заметно дольше обычного. Потеря борта временно сокращает флот, хотя мир не запрещает респавн.",
+            "config": {
+                "arena_width": 16000,
+                "arena_height": 16000,
+                "revive_timeout_sec": 12,
+                "anomaly_quota": 24,
+                "anomaly_speed_min": 45,
+                "anomaly_speed_max": 190,
+                "anomaly_force_min": 6,
+                "anomaly_force_max": 26,
+                "bounty_quota": 6000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "fragile-fleet",
+            "name": "Хрупкий флот",
+            "description": "При аварии ковер теряет 90% личного золота, а восстановление занимает шесть секунд. Аномалии умеренные — особенность мира именно в высокой цене потери.",
+            "config": {
+                "arena_width": 15000,
+                "arena_height": 15000,
+                "carpet_death_loss_percent": 90,
+                "revive_timeout_sec": 6,
+                "anomaly_quota": 10,
+                "anomaly_speed_min": 20,
+                "anomaly_speed_max": 95,
+                "anomaly_force_min": 2,
+                "anomaly_force_max": 12,
+                "bounty_quota": 8000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "three-ship-squadron",
+            "name": "Тройной дозор",
+            "description": "У команды только три ковра, зато каждому достаётся просторная арена и запас из 9 000 монет. Это компактный флот, а не стандартные пять бортов.",
+            "config": {
+                "carpet_count": 3,
+                "arena_width": 18000,
+                "arena_height": 16000,
+                "anomaly_quota": 20,
+                "anomaly_speed_min": 30,
+                "anomaly_speed_max": 145,
+                "anomaly_force_min": 4,
+                "anomaly_force_max": 20,
+                "bounty_quota": 9000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "fast-engine-poor-world",
+            "name": "Бедный спринт",
+            "description": "Скорость ковра до 220 и ускорение 75 сочетаются всего с 700 монетами. На небольшой карте цели быстро заканчиваются, поэтому важна точность выбора добычи.",
+            "config": {
+                "arena_width": 10000,
+                "arena_height": 10000,
+                "max_velocity": 220,
+                "max_acceleration": 75,
+                "anomaly_quota": 12,
+                "anomaly_speed_min": 35,
+                "anomaly_speed_max": 150,
+                "anomaly_force_min": 4,
+                "anomaly_force_max": 18,
+                "bounty_quota": 700,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "compressed-storm",
+            "name": "Сжатый шторм",
+            "description": "На арене 8 000 на 8 000 одновременно движутся 64 аномалии. Они не рекордно сильные, но частые пересечения зон делают свободные маршруты короткими.",
+            "config": {
+                "arena_width": 8000,
+                "arena_height": 8000,
+                "anomaly_quota": 64,
+                "anomaly_speed_min": 35,
+                "anomaly_speed_max": 170,
+                "anomaly_force_min": 5,
+                "anomaly_force_max": 24,
+                "anomaly_effect_radius_min": 350,
+                "anomaly_effect_radius_max": 1100,
+                "bounty_quota": 3600,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "last-carpet-standing",
+            "name": "Последний ковер",
+            "description": "У команды только один ковер. Если он погибнет, замены не будет — одна жизнь на весь забег.",
+            "config": {
+                "carpet_count": 1,
+                "enable_respawn": false,
+                "arena_width": 9000,
+                "arena_height": 9000,
+                "anomaly_quota": 50,
+                "bounty_quota": 5000,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
+        },
+        {
+            "id": "king-of-the-hill",
+            "name": "Царь горы",
+            "description": "Десять ковров, редкие аномалии и почти максимальный золотой запас. Но каждая потеря окончательна: респавна нет.",
+            "config": {
+                "carpet_count": 10,
+                "enable_respawn": false,
+                "arena_width": 12000,
+                "arena_height": 12000,
+                "anomaly_quota": 8,
+                "anomaly_speed_min": 20,
+                "anomaly_speed_max": 90,
+                "anomaly_force_min": 3,
+                "anomaly_force_max": 16,
+                "anomaly_force_outlier_probability": 0,
+                "bounty_quota": 12000,
+                "bounty_base_value": 45,
+                "bounty_max_value": 1800,
+                "enable_spawner": true,
+                "enable_coin_spawner": true
+            }
         }
-    ,
-    {
-      "id": "last-carpet-standing",
-      "name": "Последний ковер",
-      "description": "У команды только один ковер. Если он погибнет, замены не будет — одна жизнь на весь забег.",
-      "config": {
-        "carpet_count": 1,
-        "enable_respawn": false,
-        "arena_width": 9000,
-        "arena_height": 9000,
-        "anomaly_quota": 50,
-        "bounty_quota": 5000,
-        "enable_spawner": true,
-        "enable_coin_spawner": true
-      }
-    },
-    {
-      "id": "king-of-the-hill",
-      "name": "Царь горы",
-      "description": "Десять ковров, редкие аномалии и почти максимальный золотой запас. Но каждая потеря окончательна: респавна нет.",
-      "config": {
-        "carpet_count": 10,
-        "enable_respawn": false,
-        "arena_width": 12000,
-        "arena_height": 12000,
-        "anomaly_quota": 8,
-        "anomaly_speed_min": 20,
-        "anomaly_speed_max": 90,
-        "anomaly_force_min": 3,
-        "anomaly_force_max": 16,
-        "anomaly_force_outlier_probability": 0,
-        "bounty_quota": 12000,
-        "bounty_base_value": 45,
-        "bounty_max_value": 1800,
-        "enable_spawner": true,
-        "enable_coin_spawner": true
-      }
-    }
-  ]
+    ]
 }
