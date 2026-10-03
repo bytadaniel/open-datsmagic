@@ -26,6 +26,10 @@ pub enum ApiError {
     #[error("rate limit exceeded: 1 command per tick")]
     RateLimitExceeded,
 
+    /// 429: Более 5 HTTP-запросов в секунду от одного токена
+    #[error("rate limit exceeded: 5 requests per second per token")]
+    RequestRateLimitExceeded,
+
     /// 400: Игровая сессия находится на паузе или завершена
     #[error("session is not active")]
     SessionNotActive,
@@ -47,6 +51,10 @@ impl IntoResponse for ApiError {
             Self::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate limit exceeded: 1 command per tick",
+            ),
+            Self::RequestRateLimitExceeded => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded: 5 requests per second per token",
             ),
             Self::SessionNotActive => (StatusCode::BAD_REQUEST, "session is not active"),
             Self::PlayerDestroyed => (StatusCode::BAD_REQUEST, "player_destroyed"),

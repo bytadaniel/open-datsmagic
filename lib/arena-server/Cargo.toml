@@ -15,6 +15,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
 axum = { version = "0.8.9", features = ["ws"] }
 futures-util = "0.3"
+flate2 = "1.1"
 tower = { version = "0.5.3", features = ["util"] }
 
 [dev-dependencies]

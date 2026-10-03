@@ -1,4 +1,5 @@
 import json
+import gzip
 import tempfile
 import unittest
 import os
@@ -105,19 +106,19 @@ class HubTests(unittest.TestCase):
                 self.headers = headers or {}
                 self.responses = []
 
-            def send_bytes(self, status, payload, content_type):
-                self.responses.append((status, payload, content_type))
+            def send_bytes(self, status, payload, content_type, content_encoding=None):
+                self.responses.append((status, payload, content_type, content_encoding))
 
             def send_json(self, status, payload):
                 self.responses.append((status, payload))
 
         class UpstreamResponse:
             status = 200
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
 
             def __enter__(self): return self
             def __exit__(self, *args): return False
-            def read(self): return b'{"transports":[]}'
+            def read(self): return gzip.compress(b'{"transports":[]}')
 
         with tempfile.TemporaryDirectory() as directory:
             registry = TeamRegistry(Path(directory) / "registry.json")
@@ -132,8 +133,11 @@ class HubTests(unittest.TestCase):
                 RequestHandler.handle_visualizer_move(handler, body)
                 sent_request = upstream.call_args.args[0]
                 self.assertEqual(sent_request.get_header("X-auth-token"), token)
+                self.assertEqual(sent_request.get_header("Accept-encoding"), "gzip")
                 self.assertNotIn(token, sent_request.full_url)
                 self.assertEqual(handler.responses[0][0], 200)
+                self.assertEqual(handler.responses[0][1], b'{"transports":[]}')
+                self.assertIsNone(handler.responses[0][3])
                 lease = json.loads(lease_path.read_text(encoding="utf-8"))
                 self.assertEqual(lease["carpetId"], command["id"])
                 self.assertEqual(lease["leaseId"], "browser-lease")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import gzip
 import html
 import json
 import math
@@ -898,9 +899,12 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[hub-http] {self.address_string()} {fmt % args}")
 
-    def send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+    def send_bytes(self, status: int, body: bytes, content_type: str, content_encoding: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if content_encoding:
+            self.send_header("Content-Encoding", content_encoding)
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
@@ -1191,14 +1195,28 @@ class RequestHandler(BaseHTTPRequestHandler):
                 headers={"X-Auth-Token": token, "Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
+            request.add_header("Accept-Encoding", "gzip")
             with urllib.request.urlopen(request, timeout=2.0) as response:
                 payload = response.read()
                 content_type = response.headers.get("Content-Type", "application/json; charset=utf-8")
-                self.send_bytes(response.status, payload, content_type)
+                content_encoding = response.headers.get("Content-Encoding")
+                client_accepts_gzip = any(
+                    encoding.split(";", 1)[0].strip().lower() == "gzip"
+                    and not any(
+                        parameter.strip().lower() in {"q=0", "q=0.0", "q=0.00"}
+                        for parameter in encoding.split(";")[1:]
+                    )
+                    for encoding in self.headers.get("Accept-Encoding", "").split(",")
+                )
+                if content_encoding and content_encoding.lower() == "gzip" and not client_accepts_gzip:
+                    payload = gzip.decompress(payload)
+                    content_encoding = None
+                self.send_bytes(response.status, payload, content_type, content_encoding)
         except urllib.error.HTTPError as exc:
             payload = exc.read()
             self.send_bytes(exc.code, payload or json.dumps({"error": "arena rejected request"}).encode("utf-8"),
-                            exc.headers.get("Content-Type", "application/json; charset=utf-8"))
+                            exc.headers.get("Content-Type", "application/json; charset=utf-8"),
+                            exc.headers.get("Content-Encoding"))
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             self.send_json(502, {"error": f"active arena is unavailable: {exc}"})
         finally:

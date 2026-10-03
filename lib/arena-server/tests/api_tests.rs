@@ -3,6 +3,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use std::io::Read;
 use std::sync::OnceLock;
 use tower::ServiceExt;
 
@@ -24,6 +25,19 @@ fn install_test_token_registry() {
             ("beta", "Beta"),
             ("last-carpet-team", "Last Carpet"),
             ("king-team", "King Team"),
+            ("gzip-team", "Gzip Team"),
+            ("limited-team", "Limited Team"),
+            ("independent-team", "Independent Team"),
+            ("load-team-0", "Load Test Team"),
+            ("load-team-1", "Load Test Team"),
+            ("load-team-2", "Load Test Team"),
+            ("load-team-3", "Load Test Team"),
+            ("load-team-4", "Load Test Team"),
+            ("load-team-5", "Load Test Team"),
+            ("load-team-6", "Load Test Team"),
+            ("load-team-7", "Load Test Team"),
+            ("load-team-8", "Load Test Team"),
+            ("load-team-9", "Load Test Team"),
         ];
         let registry = serde_json::json!({
             "teams": teams.into_iter().map(|(token, name)| {
@@ -170,6 +184,117 @@ async fn test_move_returns_exact_desert_contract() {
         .into_iter()
         .collect()
     );
+}
+
+#[tokio::test]
+async fn gzip_is_negotiated_without_changing_desert_json() {
+    install_test_token_registry();
+    let app = create_api_router(GameEngine::new(ServerConfig::default()));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/play/magcarp/player/move")
+        .header("X-Auth-Token", "gzip-team")
+        .header("Accept-Encoding", "gzip")
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"transports":[]}"#))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    let compressed = response.into_body().collect().await.unwrap().to_bytes();
+    let mut decoded = Vec::new();
+    flate2::read::GzDecoder::new(compressed.as_ref())
+        .read_to_end(&mut decoded)
+        .unwrap();
+    let desert: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+    assert_eq!(desert["name"], "Gzip Team");
+    assert!(desert["transports"].is_array());
+}
+
+#[tokio::test]
+async fn api_limits_each_team_to_five_requests_per_second() {
+    install_test_token_registry();
+    let app = create_api_router(GameEngine::new(ServerConfig::default()));
+    let request = |token: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/play/magcarp/player/move")
+            .header("X-Auth-Token", token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"transports":[]}"#))
+            .unwrap()
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            app.clone()
+                .oneshot(request("limited-team"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        app.clone()
+            .oneshot(request("limited-team"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        app.oneshot(request("independent-team"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn api_serves_ten_distinct_teams_concurrently_with_large_snapshots() {
+    install_test_token_registry();
+    let engine = GameEngine::new(ServerConfig::default());
+    {
+        let shared = engine.shared_state();
+        let mut state = shared.write().await;
+        for index in 0..5_000 {
+            state.world.treasures.push(TreasureState {
+                id: format!("load-coin-{index}"),
+                r#type: "coin".into(),
+                position: ((index % 10_000) as f64, (index % 7_000) as f64),
+                value: 1,
+                is_collected: false,
+            });
+        }
+    }
+    engine.publish_snapshot().await;
+    let app = create_api_router(engine);
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..10 {
+        let app = app.clone();
+        tasks.spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/play/magcarp/player/move")
+                .header("X-Auth-Token", format!("load-team-{index}"))
+                .header("Content-Type", "application/json")
+                .header("Accept-Encoding", "gzip")
+                .body(Body::from(r#"{"transports":[]}"#))
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        });
+    }
+    let mut successful = 0;
+    while let Some(result) = tasks.join_next().await {
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-encoding"], "gzip");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!body.is_empty() && body.len() < 100_000);
+        successful += 1;
+    }
+    assert_eq!(successful, 10);
 }
 
 #[tokio::test]

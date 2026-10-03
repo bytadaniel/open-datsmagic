@@ -1,21 +1,25 @@
 //! Обработчики единственного публичного API DatsMagic: `POST /play/magcarp/player/move`.
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
     Extension, Request, State,
 };
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
-use axum::Json;
+use axum::response::{IntoResponse, Response};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::engine::command_buffer::CommandError;
 use crate::engine::state::{CarpetState, PlayerState, WorldSnapshot};
@@ -30,6 +34,102 @@ use super::dto::{
 use super::errors::ApiError;
 
 pub const AUTH_HEADER_NAME: &str = "x-auth-token";
+const TOKEN_REQUEST_LIMIT: usize = 5;
+const TOKEN_REQUEST_WINDOW: Duration = Duration::from_secs(1);
+static TOKEN_REQUESTS: OnceLock<Mutex<HashMap<String, VecDeque<Instant>>>> = OnceLock::new();
+static TOKEN_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn take_rate_limit_slot(
+    requests: &mut HashMap<String, VecDeque<Instant>>,
+    player_id: &str,
+    now: Instant,
+) -> bool {
+    let timestamps = requests.entry(player_id.to_owned()).or_default();
+    while timestamps
+        .front()
+        .is_some_and(|timestamp| now.duration_since(*timestamp) >= TOKEN_REQUEST_WINDOW)
+    {
+        timestamps.pop_front();
+    }
+    if timestamps.len() >= TOKEN_REQUEST_LIMIT {
+        return false;
+    }
+    timestamps.push_back(now);
+    true
+}
+
+fn allow_token_request(player_id: &str) -> bool {
+    let limiter = TOKEN_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut requests) = limiter.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    let allowed = take_rate_limit_slot(&mut requests, player_id, now);
+    if TOKEN_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) % 256 == 255 {
+        requests.retain(|_, timestamps| {
+            timestamps
+                .back()
+                .is_some_and(|timestamp| now.duration_since(*timestamp) < TOKEN_REQUEST_WINDOW)
+        });
+    }
+    allowed
+}
+
+fn accepts_gzip(accept_encoding: Option<&HeaderValue>) -> bool {
+    accept_encoding
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|encoding| {
+                let mut parts = encoding.trim().split(';');
+                let is_gzip = parts
+                    .next()
+                    .is_some_and(|name| name.trim().eq_ignore_ascii_case("gzip"));
+                let quality = parts
+                    .filter_map(|parameter| parameter.trim().split_once('='))
+                    .find(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
+                    .and_then(|(_, value)| value.trim().parse::<f32>().ok())
+                    .unwrap_or(1.0);
+                is_gzip && quality > 0.0
+            })
+        })
+}
+
+fn json_response<T: Serialize>(value: &T, accept_encoding: Option<&HeaderValue>) -> Response {
+    let Ok(body) = serde_json::to_vec(value) else {
+        return ApiError::Internal("failed to serialize Desert response".into()).into_response();
+    };
+    let compressed = accepts_gzip(accept_encoding);
+    let (body, compressed) = if compressed {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        if std::io::Write::write_all(&mut encoder, &body).is_err() {
+            return ApiError::Internal("failed to compress Desert response".into()).into_response();
+        }
+        match encoder.finish() {
+            Ok(compressed) => (compressed, true),
+            Err(_) => {
+                return ApiError::Internal("failed to compress Desert response".into())
+                    .into_response()
+            }
+        }
+    } else {
+        (body, false)
+    };
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    if compressed {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    response
+}
 
 #[derive(Deserialize)]
 struct TokenRegistryFile {
@@ -128,6 +228,9 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, A
             registered_team_name(&token).ok_or(ApiError::Unauthorized)?,
         )
     };
+    if !observer && !allow_token_request(&player_id) {
+        return Err(ApiError::RequestRateLimitExceeded);
+    }
     req.extensions_mut().insert(AuthToken {
         player_id,
         team_name,
@@ -409,8 +512,6 @@ pub async fn visualizer_websocket(
         .on_upgrade(move |socket| visualizer_socket(socket, engine, claims))
 }
 
-use axum::response::IntoResponse;
-
 async fn visualizer_socket(socket: WebSocket, engine: GameEngine, claims: RealtimeTicket) {
     if claims.mode == "player" {
         ensure_player(&engine, &claims.player_id).await;
@@ -520,8 +621,9 @@ async fn visualizer_socket(socket: WebSocket, engine: GameEngine, claims: Realti
 pub async fn post_legacy_move(
     Extension(token): Extension<AuthToken>,
     State(engine): State<GameEngine>,
+    headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<LegacyDesertDto>, ApiError> {
+) -> Result<Response, ApiError> {
     let request: LegacyMoveRequestDto =
         serde_json::from_slice(&body).map_err(|_| ApiError::InvalidVector)?;
     let player_id = token.player_id;
@@ -530,13 +632,16 @@ pub async fn post_legacy_move(
         if !request.transports.is_empty() {
             return Err(ApiError::Unauthorized);
         }
-        return Ok(Json(legacy_desert(
-            &engine.get_snapshot(),
-            None,
-            &team_name,
-            &engine,
-            Vec::new(),
-        )));
+        return Ok(json_response(
+            &legacy_desert(
+                &engine.get_snapshot(),
+                None,
+                &team_name,
+                &engine,
+                Vec::new(),
+            ),
+            headers.get(header::ACCEPT_ENCODING),
+        ));
     }
     ensure_player(&engine, &player_id).await;
     let snapshot = engine.get_snapshot();
@@ -578,11 +683,14 @@ pub async fn post_legacy_move(
             Err(CommandError::PlayerDestroyed) => return Err(ApiError::PlayerDestroyed),
         }
     }
-    Ok(Json(legacy_desert(
-        &engine.get_snapshot(),
-        Some(&player_id),
-        &team_name,
-        &engine,
-        errors,
-    )))
+    Ok(json_response(
+        &legacy_desert(
+            &engine.get_snapshot(),
+            Some(&player_id),
+            &team_name,
+            &engine,
+            errors,
+        ),
+        headers.get(header::ACCEPT_ENCODING),
+    ))
 }
