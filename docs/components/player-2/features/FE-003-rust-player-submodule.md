@@ -29,6 +29,7 @@ related_test_cases:
 - `token.txt`, `target/` и временные файлы игнорируются внутри репозитория игрока. Токены не должны попадать в коммиты.
 - Cargo package остается самостоятельным и не добавляется в workspace сервера.
 - `scripts/run_rust_bytadaniel.sh` проверяет наличие `DATS_PLAYER_TOKEN`, задает локальный default `DATS_SERVER_URL` и запускает release-сборку из каталога бота.
+- `DATS_SERVER_URL` может быть `http://` или `https://` origin; HTTPS использует стандартную проверку сертификатов.
 - Необязательные `DATS_PLAYER_STRATEGY`, `DATS_MOVEMENT_STRATEGY`, `DATS_DOOM_POLICY` и прочие настройки стратегии передаются процессу без изменений.
 - Общий `.env.example` показывает необходимые переменные для всех внешних bot launchers; секрет команды в нём оставляется пустым.
 
