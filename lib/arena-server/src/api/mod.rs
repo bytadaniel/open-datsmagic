@@ -31,5 +31,11 @@ pub fn create_api_router(engine: GameEngine) -> Router {
             post(post_legacy_move).route_layer(middleware::from_fn(auth_middleware)),
         )
         .route("/stream/visualizer", get(handlers::visualizer_websocket))
+        // Public arena origins may include `/play` as the REST API prefix.
+        // Keep both paths so reverse proxies can either preserve or strip it.
+        .route(
+            "/play/stream/visualizer",
+            get(handlers::visualizer_websocket),
+        )
         .with_state(engine)
 }

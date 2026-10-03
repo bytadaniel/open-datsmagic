@@ -252,6 +252,24 @@ async fn api_limits_each_team_to_five_requests_per_second() {
 }
 
 #[tokio::test]
+async fn websocket_route_accepts_public_play_prefix_alias() {
+    let app = create_api_router(GameEngine::new(ServerConfig::default()));
+    for path in ["/stream/visualizer", "/play/stream/visualizer"] {
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "route missing: {path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn api_serves_ten_distinct_teams_concurrently_with_large_snapshots() {
     install_test_token_registry();
     let engine = GameEngine::new(ServerConfig::default());

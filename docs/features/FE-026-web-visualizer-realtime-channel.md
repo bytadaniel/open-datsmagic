@@ -23,6 +23,7 @@ related_test_cases: [TC-WEB-VISUALIZER-REALTIME-01]
 - Hub выдаёт краткоживущий одноразовый realtime-ticket через POST с `X-Auth-Token`; для наблюдателя тот же endpoint выдаёт read-only ticket. Реальный командный токен не попадает в URL, WebSocket payload или subprotocol.
 - Клиент открывает WebSocket напрямую к активной арене и передаёт ticket в `Sec-WebSocket-Protocol` как одноразовую capability. Arena обменивает его у Hub по внутреннему endpoint, защищённому `ARENA_CONTROL_TOKEN`; ticket одноразовый и живёт не более 10 секунд.
 - Arena публикует снапшот через `watch<Arc<WorldSnapshot>>`: медленный читатель получает актуальное состояние, пропуская промежуточные версии, без растущей очереди и задержки игрового цикла.
+- Внутренний маршрут WebSocket — `/stream/visualizer`. Если публичный `ARENA_PUBLIC_URL` заканчивается на `/play` (префикс игрового REST API), arena также принимает alias `/play/stream/visualizer`; reverse proxy может как сохранять, так и снимать этот префикс при маршрутизации.
 - Поток снапшотов отправляет текущий Desert DTO сразу после подключения и затем при завершении каждого тика (200 мс). Приемник не выполняет игровую симуляцию и не блокирует тик.
 - Клиент рисует через существующий `requestAnimationFrame`; сетевой обработчик лишь заменяет latest snapshot. Интерполяция сглаживает отображение, но не влияет на физику.
 - Сообщения ввода содержат только `{transports:[{id,acceleration}]}`. Arena проверяет ownership, живой статус, finite-значения и активность сессии. В пределах тика повторные realtime-команды коалесцируются: применяется последняя принятая команда ковра. REST-бот сохраняет прежний лимит одной batch-команды на тик и прежний HTTP-контракт.
@@ -59,7 +60,7 @@ sequenceDiagram
 
 ### WebSocket
 
-Подпротокол: `stadmagic.v1`; одноразовая capability передаётся отдельным значением `stadmagic-ticket.<opaque-ticket>` в `Sec-WebSocket-Protocol`.
+Путь arena: `/stream/visualizer`; при публичном базовом URL с суффиксом `/play` Hub выдаёт `/play/stream/visualizer`, который обслуживается совместимым alias. Подпротокол: `stadmagic.v1`; одноразовая capability передаётся отдельным значением `stadmagic-ticket.<opaque-ticket>` в `Sec-WebSocket-Protocol`.
 
 Команда клиента:
 
@@ -103,6 +104,7 @@ sequenceDiagram
 - [x] Описать отдельный realtime-контракт для браузерного клиента, не меняя REST API ботов.
 - [x] Реализовать Hub ticket issuance/consume и lease heartbeat.
 - [x] Реализовать watch-снимок и WebSocket маршрут в arena server.
+- [x] Поддержать публичный alias WebSocket для `ARENA_PUBLIC_URL` с `/play`.
 - [x] Перевести веб-визуализатор с частого request-response polling на realtime snapshot/commands.
 - [x] Проверить ownership, observer read-only, ticket replay/expiry и коалесценцию ввода unit-тестами; browser reconnect проверяется вручную.
 
