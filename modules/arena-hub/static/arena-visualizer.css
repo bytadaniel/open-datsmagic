@@ -676,3 +676,4 @@ details.disclosure-closing>.disclosure-content{grid-template-rows:0fr!important;
   .visualizer-shell.fullscreen-fallback .visualizer-stage{display:block;height:100%;width:100%;padding:0}
   .visualizer-shell.fullscreen-fallback .canvas-wrap{height:100%;width:100%;min-height:0;max-height:none;border:0;border-radius:0}
 }
+body.arena-immersive-mobile .site-header{display:none!important}

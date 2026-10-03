@@ -1068,8 +1068,10 @@
   }
   function syncFullscreenButton() {
     const active = fullscreenActive();
+    const mobileViewport = matchMedia('(max-width:760px), (pointer:coarse)').matches;
+    document.body.classList.toggle('arena-immersive-mobile', active && mobileViewport);
     fullscreenButton.textContent = active ? '⛶ Выйти' : '⛶';
-    orientationButton.hidden = !active || !matchMedia('(max-width:760px), (pointer:coarse)').matches;
+    orientationButton.hidden = !active || !mobileViewport;
     if (!orientationButton.hidden) syncOrientationButton();
     else if (!active) { try { screen.orientation?.unlock?.(); } catch (_) {} }
   }
