@@ -49,7 +49,7 @@ related_test_cases: [TC-JAVA-API-01]
 |---|---|---|
 | `DATS_GAME_MODE` | Нет | `fixture` по умолчанию; `api` для сервера |
 | `DATS_PLAYER_TOKEN` | В режиме `api` | Выданный Hub токен, отправляется только в `X-Auth-Token` |
-| `DATS_GAME_API_URL` | В режиме `api` | Полный move URL, например `http://stadmagic.strangled.net/play/magcarp/player/move` |
+| `DATS_GAME_API_URL` | В режиме `api` | Полный move URL, например `https://stadmagic.strangled.net/play/magcarp/player/move` |
 | `DATS_SHOW_VISUALIZATION` | Нет | `true` по умолчанию |
 | `DATS_PLAY_SOUND` | Нет | `false` по умолчанию |
 

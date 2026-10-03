@@ -5,4 +5,4 @@
 - [`domain/DR-001-java-player-runtime.md`](domain/DR-001-java-player-runtime.md): поведение при запуске как офлайн-просмотрщика или игрового клиента.
 - [`features/FE-001-java-player-api-runtime.md`](features/FE-001-java-player-api-runtime.md): переменные окружения, HTTP-контракт, сборка и обработка ошибок.
 
-Сборка и запуск из корня проекта: `DATS_GAME_MODE=api DATS_PLAYER_TOKEN=... DATS_GAME_API_URL=http://stadmagic.strangled.net/play/magcarp/player/move ./scripts/run_java_sas4eka.sh`.
+Сборка и запуск из корня проекта: `DATS_GAME_MODE=api DATS_PLAYER_TOKEN=... DATS_GAME_API_URL=https://stadmagic.strangled.net/play/magcarp/player/move ./scripts/run_java_sas4eka.sh`.

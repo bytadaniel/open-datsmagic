@@ -144,6 +144,61 @@ struct TokenRegistryTeam {
     name: String,
 }
 
+fn visualizer_team_names() -> std::collections::HashMap<String, String> {
+    let path = std::env::var_os("DATS_TOKEN_REGISTRY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("modules/arena-hub/data/registry.json")
+        });
+    std::fs::read(path)
+        .ok()
+        .and_then(|source| serde_json::from_slice::<TokenRegistryFile>(&source).ok())
+        .map(|registry| {
+            registry
+                .teams
+                .into_iter()
+                .map(|team| (token_fingerprint(&team.token), team.name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn visualizer_enemy_teams(
+    snapshot: &WorldSnapshot,
+    player_id: Option<&str>,
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    let mut players: Vec<_> = snapshot
+        .world
+        .players
+        .iter()
+        .filter(|(id, _)| player_id.is_none_or(|own_id| id.as_str() != own_id))
+        .collect();
+    players.sort_by(|(left, _), (right, _)| left.cmp(right));
+    players
+        .into_iter()
+        .flat_map(|(team_id, player)| {
+            let mut carpets: Vec<_> = player.carpets.values().collect();
+            carpets.sort_by(|left, right| left.id.cmp(&right.id));
+            let team_name = names
+                .get(team_id)
+                .cloned()
+                .unwrap_or_else(|| format!("Команда {}", &team_id[..team_id.len().min(6)]));
+            carpets.into_iter().map(move |carpet| {
+                serde_json::json!({
+                    "carpetId": carpet.id,
+                    "teamId": team_id,
+                    "teamName": team_name,
+                })
+            })
+        })
+        .collect()
+}
+
 struct TokenRegistryCache {
     path: PathBuf,
     modified: Option<SystemTime>,
@@ -517,6 +572,8 @@ async fn visualizer_socket(socket: WebSocket, engine: GameEngine, claims: Realti
         ensure_player(&engine, &claims.player_id).await;
     }
     let (mut sender, mut receiver) = socket.split();
+    let team_names = visualizer_team_names();
+    let writer_team_names = team_names.clone();
     let (outgoing_tx, mut outgoing_rx) = tokio::sync::mpsc::channel::<Message>(8);
     let writer_engine = engine.clone();
     let writer_claims = claims.clone();
@@ -530,7 +587,8 @@ async fn visualizer_socket(socket: WebSocket, engine: GameEngine, claims: Realti
                     let player_id = (writer_claims.mode == "player").then_some(writer_claims.player_id.as_str());
                     let payload = serde_json::json!({
                         "type": "snapshot", "tick": snapshot.tick,
-                        "state": legacy_desert(&snapshot, player_id, &writer_claims.name, &writer_engine, Vec::new())
+                        "state": legacy_desert(&snapshot, player_id, &writer_claims.name, &writer_engine, Vec::new()),
+                        "enemyTeams": visualizer_enemy_teams(&snapshot, player_id, &writer_team_names)
                     });
                     if let Ok(text) = serde_json::to_string(&payload) {
                         if sender.send(Message::Text(text.into())).await.is_err() { break; }
@@ -547,7 +605,8 @@ async fn visualizer_socket(socket: WebSocket, engine: GameEngine, claims: Realti
     let player_id = (claims.mode == "player").then_some(claims.player_id.as_str());
     let initial = serde_json::json!({
         "type": "snapshot", "tick": snapshot.tick,
-        "state": legacy_desert(&snapshot, player_id, &claims.name, &engine, Vec::new())
+        "state": legacy_desert(&snapshot, player_id, &claims.name, &engine, Vec::new()),
+        "enemyTeams": visualizer_enemy_teams(&snapshot, player_id, &team_names)
     });
     if let Ok(text) = serde_json::to_string(&initial) {
         let _ = outgoing_tx.send(Message::Text(text.into())).await;

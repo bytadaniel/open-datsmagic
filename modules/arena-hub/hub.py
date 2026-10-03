@@ -95,7 +95,24 @@ def load_world_configs(world_catalog: list[dict[str, Any]]) -> list[dict[str, An
         raise RuntimeError("server returned an invalid world configuration catalog")
     if [world.get("id") for world in worlds] != [world.get("id") for world in world_catalog]:
         raise RuntimeError("server world configurations do not match worlds.json")
-    return worlds
+    # Keep the web/API shape stable across process and runtime-api modes. The
+    # arena server owns effective gameplay values; the checked-in catalog owns
+    # human-facing identity and copy.
+    normalized: list[dict[str, Any]] = []
+    for index, (metadata, runtime_world) in enumerate(zip(world_catalog, worlds), start=1):
+        if not isinstance(runtime_world, dict):
+            raise RuntimeError(f"server returned an invalid world at index {index - 1}")
+        runtime_config = runtime_world.get("config")
+        catalog_config = metadata.get("config")
+        normalized.append({
+            **runtime_world,
+            "id": metadata["id"],
+            "name": metadata.get("name") or f"Мир {index:02d}",
+            "description": metadata.get("description") or "",
+            "world_number": index,
+            "config": runtime_config if isinstance(runtime_config, dict) else catalog_config,
+        })
+    return normalized
 
 
 class TeamRegistry:
@@ -172,6 +189,11 @@ class TeamRegistry:
     def names(self) -> dict[str, str]:
         with self.lock:
             return {key: team["name"] for key, team in self.teams.items()}
+
+    def public_teams(self) -> list[dict[str, str]]:
+        with self.lock:
+            names = sorted((team["name"] for team in self.teams.values()), key=str.casefold)
+        return [{"name": name} for name in names]
 
     def resolve_token(self, token: str) -> str | None:
         key = token_id(token.strip())
@@ -459,7 +481,12 @@ class HubState:
             result = dict(self.arena)
         if result["world_number"] is not None:
             result["url"] = ARENA_PUBLIC_URL or f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}"
-            result["seconds_remaining"] = max(0, int((result.get("ends_at") or time.time()) - time.time()))
+            if result.get("status") == "cooldown":
+                target = result.get("next_start_at")
+                result["seconds_remaining"] = max(0, int((target or time.time()) - time.time()))
+            else:
+                target = result.get("ends_at")
+                result["seconds_remaining"] = max(0, int((target or time.time()) - time.time()))
         return result
 
 
@@ -676,59 +703,105 @@ def esc(value: str) -> str:
 
 
 def markdown_html(source: str) -> str:
+    source = re.sub(r"\A---\s*\n.*?\n---\s*\n", "", source, count=1, flags=re.S)
+
+    def inline(text: str) -> str:
+        text = esc(text)
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+        text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", text)
+        link_pattern = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+        def make_link(match: re.Match[str]) -> str:
+            label, href = match.group(1), match.group(2)
+            if href.lower().startswith(("javascript:", "data:")):
+                return label
+            safe_href = href if href.startswith(("https://", "http://", "/", "#", "../", "./")) else "#"
+            external = safe_href.startswith(("https://", "http://"))
+            attrs = ' target="_blank" rel="noopener noreferrer"' if external else ""
+            return f'<a href="{esc(safe_href)}"{attrs}>{label}</a>'
+
+        return link_pattern.sub(make_link, text)
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    def is_table_rule(line: str) -> bool:
+        return bool(re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*", line))
+
     output: list[str] = []
-    in_code = False
-    in_list = False
-    in_table = False
-    for line in source.splitlines():
-        if line.strip().startswith("```"):
-            if in_list:
-                output.append("</ul>")
-                in_list = False
-            if in_table:
-                output.append("</pre>")
-                in_table = False
-            output.append("<pre><code>" if not in_code else "</code></pre>")
-            in_code = not in_code
+    lines = source.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped:
+            index += 1
             continue
-        if in_code:
-            output.append(esc(line) + "\n")
+        if stripped.startswith("```"):
+            language = stripped[3:].strip()
+            code: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].strip().startswith("```"):
+                code.append(lines[index])
+                index += 1
+            lang_class = f' class="language-{esc(language)}"' if language else ""
+            output.append(f"<pre class=docs-code><code{lang_class}>{esc(chr(10).join(code))}</code></pre>")
+            index += 1
             continue
-        if line.startswith("|"):
-            if in_list:
-                output.append("</ul>")
-                in_list = False
-            if not in_table:
-                output.append('<pre class="table">')
-                in_table = True
-            output.append(esc(line) + "\n")
+        if line.startswith("|") and index + 1 < len(lines) and is_table_rule(lines[index + 1]):
+            headers = cells(line)
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and lines[index].startswith("|"):
+                rows.append(cells(lines[index]))
+                index += 1
+            table = ['<div class="docs-table-wrap"><table class="docs-table"><thead><tr>']
+            table.extend(f"<th scope=col>{inline(value)}</th>" for value in headers)
+            table.append("</tr></thead><tbody>")
+            for row in rows:
+                table.append("<tr>" + "".join(f"<td>{inline(value)}</td>" for value in row) + "</tr>")
+            table.append("</tbody></table></div>")
+            output.append("".join(table))
             continue
-        if in_table:
-            output.append("</pre>")
-            in_table = False
-        if line.startswith("- "):
-            if not in_list:
-                output.append("<ul>")
-                in_list = True
-            output.append(f"<li>{esc(line[2:])}</li>")
-        else:
-            if in_list:
-                output.append("</ul>")
-                in_list = False
-            if line.startswith("### "):
-                output.append(f"<h3>{esc(line[4:])}</h3>")
-            elif line.startswith("## "):
-                output.append(f"<h2>{esc(line[3:])}</h2>")
-            elif line.startswith("# "):
-                output.append(f"<h1>{esc(line[2:])}</h1>")
-            elif line.strip():
-                output.append(f"<p>{esc(line)}</p>")
-    if in_list:
-        output.append("</ul>")
-    if in_table:
-        output.append("</pre>")
-    if in_code:
-        output.append("</code></pre>")
+        heading = re.match(r"^(#{1,3})\s+(.+)$", line)
+        if heading:
+            level, title = len(heading.group(1)), heading.group(2).strip()
+            slug = re.sub(r"[^a-z0-9а-яё]+", "-", title.lower()).strip("-")
+            output.append(f'<h{level} id="{esc(slug)}">{inline(title)}</h{level}>')
+            index += 1
+            continue
+        if stripped in {"---", "***", "___"}:
+            output.append('<hr class="docs-divider">')
+            index += 1
+            continue
+        if stripped.startswith("> "):
+            quote: list[str] = []
+            while index < len(lines) and lines[index].strip().startswith(">"):
+                quote.append(inline(lines[index].strip().removeprefix(">").strip()))
+                index += 1
+            output.append(f'<blockquote class="docs-quote">{" ".join(quote)}</blockquote>')
+            continue
+        list_match = re.match(r"^\s*(-|\*)\s+(.+)$", line)
+        ordered_match = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
+        if list_match or ordered_match:
+            ordered = ordered_match is not None
+            tag = "ol" if ordered else "ul"
+            items: list[str] = []
+            while index < len(lines):
+                item_match = re.match(r"^\s*(?:-|\*)\s+(.+)$", lines[index]) if not ordered else re.match(r"^\s*\d+[.)]\s+(.+)$", lines[index])
+                if not item_match:
+                    break
+                items.append(f"<li>{inline(item_match.group(1))}</li>")
+                index += 1
+            output.append(f'<{tag} class="docs-list">{"".join(items)}</{tag}>')
+            continue
+        paragraph = [stripped]
+        index += 1
+        while index < len(lines) and lines[index].strip() and not re.match(r"^(#{1,3}\s|\||```|>\s|\s*(?:[-*]\s+|\d+[.)]\s+))", lines[index]):
+            paragraph.append(lines[index].strip())
+            index += 1
+        output.append(f'<p>{inline(" ".join(paragraph))}</p>')
     return "\n".join(output)
 
 
@@ -736,28 +809,58 @@ STYLE = '<link rel="icon" type="image/svg+xml" href="/static/stadmagic-mark.svg"
 
 
 def page(title: str, body: str) -> bytes:
-    nav = '<header><a class="brand" href="/" aria-label="StadMagic — на главную"><img src="/static/stadmagic-mark.svg" alt=""><strong>StadMagic</strong></a><a href="/">Обзор</a><a href="/arena">Арена</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
+    nav = '<header class="site-header"><a class="brand" href="/" aria-label="StadMagic — на главную"><img src="/static/stadmagic-mark.svg" alt=""><span><strong>STADMAGIC</strong><small>ONLINE GAME JAM</small></span></a><nav class="primary-nav" aria-label="Основная навигация"><a class="nav-arena" href="/arena"><span class="nav-arena-pulse" aria-hidden="true"></span>Арена<span class="nav-live-tag">LIVE</span></a><a href="/register">Команды</a><a href="/leaderboard">Рейтинг</a><a href="/worlds">Миры</a><a href="/docs">Документация</a></nav><div class="nav-actions"><a class="nav-cta nav-source" href="https://github.com/bytadaniel/dats-magic" target="_blank" rel="noopener noreferrer" aria-label="Исходный код StadMagic на GitHub"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.53v-2.04c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.24-1.65-1.24-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 1.7 2.62 1.21 3.26.93.1-.72.39-1.21.71-1.49-2.47-.28-5.06-1.24-5.06-5.5 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.14 3.05-1.14.61 1.53.23 2.67.11 2.95.72.78 1.15 1.77 1.15 2.99 0 4.27-2.59 5.21-5.07 5.49.4.35.76 1.02.76 2.06V22c0 .29.2.63.76.52A11.1 11.1 0 0 0 12 .9Z"/></svg><span>GitHub</span></a><button class="nav-profile" id="nav-profile" type="button">Войти <span aria-hidden="true">↗</span></button></div></header>'
     footer = '<footer class=site-footer>StadMagic · Мир меняется. Команды остаются.</footer>'
-    return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main>{body}</main>{footer}</body></html>").encode("utf-8")
+    motion = """<div class="page-ambient" aria-hidden="true"><i></i><i></i><i></i></div><dialog class="site-auth-dialog" id="site-auth-dialog"><form id="site-auth-form"><button type="button" class="auth-close" id="site-auth-close" aria-label="Закрыть">×</button><span class="eyebrow">ПРОФИЛЬ КОМАНДЫ</span><h2>Подключить команду</h2><p>Введи токен один раз. Он сохранится только в этом браузере и будет подставляться для голосования и игры.</p><label for="site-auth-token">Токен команды</label><input id="site-auth-token" type="password" autocomplete="current-password" required placeholder="Вставь токен команды"><p id="site-auth-status" class="auth-status" role="status" aria-live="polite"></p><div class="auth-actions"><button type="submit" id="site-auth-submit">Войти</button><button type="button" class="secondary" id="site-auth-logout" hidden>Выйти</button></div></form></dialog><script>
+      (()=>{const profile=document.querySelector('#nav-profile'),dialog=document.querySelector('#site-auth-dialog'),form=document.querySelector('#site-auth-form'),tokenInput=document.querySelector('#site-auth-token'),status=document.querySelector('#site-auth-status'),logout=document.querySelector('#site-auth-logout');const read=key=>{try{return localStorage.getItem(key)||''}catch(_){return ''}};const syncProfile=()=>{const name=read('stadmagic-team-name'),token=read('stadmagic-team-token');if(profile){profile.firstChild.textContent=name||'Войти ';profile.classList.toggle('has-team',Boolean(token&&name));profile.setAttribute('aria-label',token&&name?`Команда ${name}`:'Войти с токеном команды')}if(tokenInput&&!dialog.open)tokenInput.value=token;if(logout)logout.hidden=!token};syncProfile();if(profile)profile.addEventListener('click',event=>{event.preventDefault();syncProfile();dialog.showModal()});document.querySelector('#site-auth-close').addEventListener('click',()=>dialog.close());dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});logout.addEventListener('click',()=>{try{localStorage.removeItem('stadmagic-team-token');localStorage.removeItem('stadmagic-team-name')}catch(_){}tokenInput.value='';window.dispatchEvent(new Event('stadmagic-profile-change'));status.textContent='Команда отключена в этом браузере.';syncProfile()});form.addEventListener('submit',async event=>{event.preventDefault();const token=tokenInput.value.trim(),submit=document.querySelector('#site-auth-submit');submit.disabled=true;status.textContent='Проверяем токен…';try{const response=await fetch('/api/teams/me',{headers:{'X-Auth-Token':token}}),data=await response.json();if(!response.ok)throw Error(data.error||'Токен не принят');try{localStorage.setItem('stadmagic-team-token',token);localStorage.setItem('stadmagic-team-name',data.name)}catch(_){throw Error('Браузер запретил сохранить профиль. Разреши локальное хранилище и повтори попытку.')}window.dispatchEvent(new Event('stadmagic-profile-change'));status.textContent=`Ты вошёл как «${data.name}».`;syncProfile();setTimeout(()=>dialog.close(),500)}catch(error){status.textContent=error.message}finally{submit.disabled=false}});window.addEventListener('storage',syncProfile);window.addEventListener('stadmagic-profile-change',syncProfile);const stored=read('stadmagic-team-token');if(stored)fetch('/api/teams/me',{headers:{'X-Auth-Token':stored}}).then(async response=>{if(!response.ok)throw Error('invalid token');const data=await response.json();try{localStorage.setItem('stadmagic-team-name',data.name)}catch(_){}window.dispatchEvent(new Event('stadmagic-profile-change'))}).catch(()=>{try{localStorage.removeItem('stadmagic-team-token');localStorage.removeItem('stadmagic-team-name')}catch(_){}syncProfile()});const ambient=document.querySelector('.page-ambient');let frame=0,point=null;window.addEventListener('pointermove',event=>{point={x:event.clientX,y:event.clientY};if(frame)return;frame=requestAnimationFrame(()=>{ambient.style.setProperty('--pointer-x',`${point.x}px`);ambient.style.setProperty('--pointer-y',`${point.y}px`);frame=0})},{passive:true});const targets=document.querySelectorAll('main .card,main > section:not(.card),main > details,main > .home-resources,.arena-context,.visualizer-layout');if(!('IntersectionObserver'in window)){targets.forEach(node=>node.classList.add('scroll-reveal','is-visible'));return}targets.forEach(node=>node.classList.add('scroll-reveal'));document.body.classList.add('scroll-motion-ready');const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target)}}},{threshold:.08,rootMargin:'0px 0px -36px 0px'});targets.forEach(node=>observer.observe(node))})();
+    </script>"""
+    interactions = """<script>
+      (()=>{
+        const pending=new WeakMap();
+        document.addEventListener('click',event=>{
+          const summary=event.target.closest('details > summary');if(!summary)return;
+          const details=summary.parentElement,content=details.querySelector(':scope > .disclosure-content');if(!content)return;
+          event.preventDefault();const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const previous=pending.get(details);
+          if(previous){clearTimeout(previous.timer);content.removeEventListener('transitionend',previous.finish);pending.delete(details);details.classList.remove('disclosure-closing');return}
+          if(!details.open){details.open=true;details.classList.add('disclosure-closing');requestAnimationFrame(()=>requestAnimationFrame(()=>details.classList.remove('disclosure-closing')));return}
+          if(reduced){details.open=false;details.classList.remove('disclosure-closing');return}
+          const finish=event=>{if(event&&(event.target!==content||event.propertyName!=='grid-template-rows'))return;const active=pending.get(details);if(active){clearTimeout(active.timer);content.removeEventListener('transitionend',active.finish);pending.delete(details)}details.open=false;details.classList.remove('disclosure-closing')};
+          const timer=setTimeout(()=>finish(),430);pending.set(details,{timer,finish});details.classList.add('disclosure-closing');content.addEventListener('transitionend',finish);
+        });
+      })();
+    </script>"""
+    return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main class=page-container>{body}</main>{footer}{motion}{interactions}</body></html>").encode("utf-8")
 
 
 def home_html(state: HubState) -> bytes:
     arena = state.current_arena()
     body = """
-    <section class="card hero"><span class=eyebrow><i class=live-dot></i>Живая арена</span><h1>Здесь решается,<br>какой мир будет дальше.</h1><p>Следи за матчами, выбирай следующий мир голосом команды и смотри, кто лучше справился с хаосом.</p><div class=hero-actions><a class=button href="/worlds">Выбрать следующий мир <span aria-hidden=true>↗</span></a><a class="button secondary" href="/leaderboard">Смотреть рейтинг</a></div>
-      <div class=metrics><div class=metric><small>Сейчас играют</small><strong id=home-world>__WORLD_NAME__</strong></div><div class=metric><small>Запуск</small><strong id=home-run>__ARENA_NAME__</strong></div><div class=metric><small>Статус</small><strong id=home-status>__ARENA_STATUS__</strong></div><div class=metric><small>До смены мира</small><strong id=home-countdown>__COUNTDOWN__ сек.</strong></div></div>
-      <p><a id=home-arena-link class="button secondary" href="__ARENA_URL__">Открыть API арены</a> <span id=home-updated class=muted>обновление состояния каждые 5 секунд</span></p>
+    <section class="card hero hero-interactive"><span class=eyebrow><i class=live-dot></i>Живая арена StadMagic</span><p class="hero-format">БЕССРОЧНЫЙ · СОРЕВНОВАТЕЛЬНЫЙ · ОНЛАЙН-ГЕЙМТОН</p><h1>Запусти бота.<br>Войди в легенду.</h1><p>Собери команду ковров и отправь своего бота в живую гонку за золотом. Миры сменяются, соревнование не заканчивается — подключиться и побороться за рейтинг можно в любой момент. Или начни с наблюдения.</p><div class=hero-actions><a class="button hero-primary" href="/register"><span><strong>Создать команду</strong><small>Получить токен и выйти на арену</small></span><b aria-hidden=true>↗</b></a><a class="button secondary" href="/arena">Смотреть гонку</a></div><a class="hero-docs-link" href="/docs/world">Как играть и подключить бота <span aria-hidden="true">↗</span></a>
+      <div class="metrics arena-metrics"><div class="metric arena-metric-world"><small>Текущий мир</small><strong id=home-world>__WORLD_NAME__</strong></div><div class="metric arena-metric-status"><small>Статус арены</small><strong><span id=home-status class="phase-badge phase-starting">Подключение…</span></strong></div><div class="metric arena-metric-players"><small>Игроков в матче</small><strong id=home-players>—</strong></div><div class="metric arena-metric-countdown"><small>До смены мира</small><strong id=home-countdown>—:—</strong></div></div>
     </section>
-    <section class="card inspiration-card"><div><span class=eyebrow>Откуда появился StadMagic</span><h2>С благодарностью к Dats.Team</h2><p>Я вдохновился <a href="https://gamethon.datsteam.dev/datsmagic" target="_blank" rel="noopener noreferrer">DatsMagic от Dats.Team</a> и сделал очень похожую самостоятельную реализацию. Официальные игровые серверы закрыты, а мне захотелось дать людям возможность ещё немного поиграть в этот мир.</p><p>StadMagic — неофициальный проект, не связанный с Dats.Team. У меня нет к команде претензий и я ничего от неё не требую. Если Dats.Team попросит, я закрою серверы и доступ к игре.</p></div><span class="inspiration-mark" aria-hidden=true>✦</span></section>
-    <section class=grid><a class="card quick-link" href="/arena"><span class=eyebrow>01 · Наблюдай</span><h2>Живая арена</h2><p>Ковры, золото, аномалии и простое ручное управление прямо в браузере.</p><span class=status>Открыть визуализацию →</span></a><a class="card quick-link" href="/worlds"><span class=eyebrow>02 · Участвуй</span><h2>Голосуй за мир</h2><p>Один голос от команды. Меняй решение до старта следующей арены.</p><span class=status>Открыть каталог →</span></a><a class="card quick-link" href="/leaderboard"><span class=eyebrow>03 · Сравнивай</span><h2>Следи за командами</h2><p>Результаты активного запуска, отдельные арены и сводные итоги.</p><span class=status>Открыть лидерборд →</span></a><a class="card quick-link" href="/register"><span class=eyebrow>04 · Представься</span><h2>Создай команду</h2><p>Выбери уникальное имя и получи токен для игрового бота.</p><span class=status>Зарегистрировать команду →</span></a></section>
-    <script>async function refreshHome(){try{const d=await(await fetch('/api/worlds')).json(),a=d.active||{};document.querySelector('#home-world').textContent=a.world_name||'Подготовка арены';document.querySelector('#home-run').textContent=a.arena_name||'Ожидание';document.querySelector('#home-status').textContent=a.status||'starting';document.querySelector('#home-countdown').textContent=`${a.seconds_remaining??0} сек.`;if(a.url)document.querySelector('#home-arena-link').href=a.url;document.querySelector('#home-updated').textContent=`${d.worlds?.length??0} миров · обновлено ${new Date().toLocaleTimeString()}`}catch(_){document.querySelector('#home-updated').textContent='Нет связи с Hub API' }}refreshHome();setInterval(refreshHome,5000)</script>
+    <section class="card home-podium" aria-labelledby="home-podium-title">
+      <div class="home-podium-heading"><div><span class="eyebrow">РЕЙТИНГ КОМАНД</span><h2 id="home-podium-title">Кто сейчас впереди?</h2><p id="home-podium-subtitle">Суммарные результаты команд за всю историю</p></div><div class="podium-switch" role="group" aria-label="Период рейтинга"><button type="button" class="podium-scope" data-scope="current" aria-pressed="false">Текущая арена</button><button type="button" class="podium-scope is-active" data-scope="all" aria-pressed="true">За всё время</button></div></div>
+      <div class="home-podium-meta" id="home-podium-meta" aria-live="polite">Загружаем рейтинг…</div><div class="home-top-teams" id="home-top-teams" aria-live="polite"><div class="podium-message">Собираем данные арены…</div></div><a class="podium-full-link" id="home-podium-full-link" href="/leaderboard">Открыть полный рейтинг <span aria-hidden="true">↗</span></a>
+    </section>
+    <section class="card game-overview"><div class="game-overview-copy"><span class=eyebrow>Что это за игра?</span><h2>Программные пилоты.<br>Живая гонка без финального свистка.</h2><p class="game-lead"><b>StadMagic — бессрочный соревновательный онлайн-геймтон.</b> Здесь код становится пилотом: ты создаёшь команду и отправляешь бота в общую гонку, которая продолжается, пока сменяются арены.</p><p>Твой флот — ковры-самолёты. Они скользят по пустыне, маневрируют среди аномалий и подбирают золото. Синие поля выталкивают, красные затягивают к центру — ошибка в движении может стоить маршрута и ковра.</p><p>Условия каждый раз другие: меняются размер карты, трение, запас золота, скорость и сила аномалий. Можно наблюдать за соперниками или подключить своего бота и проверить идею в живом матче.</p><div class="game-loop"><span><i>01</i><b>Создай команду</b><small>получи игровой токен</small></span><span><i>02</i><b>Запусти бота</b><small>подключись к арене</small></span><span><i>03</i><b>Борись за рейтинг</b><small>собирай золото командой</small></span></div><a class="button secondary" href="/arena">Смотреть живую арену <span aria-hidden="true">↗</span></a></div><div class="home-legend"><span><i class="legend-chip home-gold"></i><b>Золото</b><small>монеты, которые собирают ковры</small></span><span><i class="legend-chip home-carpet"></i><b>Ковёр</b><small>цвет показывает команду</small></span><span><i class="legend-chip home-blue"></i><b>Синяя аномалия</b><small>отталкивает ковры</small></span><span><i class="legend-chip home-red"></i><b>Красная аномалия</b><small>притягивает ковры</small></span><span><i class="legend-chip home-core"></i><b>Ядро</b><small>опасная центральная область</small></span><span><i class="legend-chip home-arrow">→</i><b>V / A / W</b><small>скорость, управление, сила аномалий</small></span></div></section>
+    <section class="card inspiration-card"><div><span class=eyebrow>Источник вдохновения</span><h2>С благодарностью к Dats.Team</h2><p>Я вдохновился <a href="https://gamethon.datsteam.dev/datsmagic" target="_blank" rel="noopener noreferrer">DatsMagic от Dats.Team</a> и сделал самостоятельную похожую реализацию. Официальные игровые серверы закрыты, и мне захотелось дать людям возможность ещё немного поиграть в этот мир.</p><p>StadMagic — неофициальный проект, не связанный с Dats.Team. У меня нет к команде претензий и я ничего от неё не требую. Если Dats.Team попросит, я закрою серверы и доступ к игре.</p></div><span class="inspiration-mark" aria-hidden=true>✦</span></section>
+    <section class="card about-card"><div><span class=eyebrow>Обо мне · автор проекта</span><h2>Daniel Byta <span class="author-handle">@bytadaniel</span></h2><p>Я backend-разработчик: с 2019 года работаю с Node.js, а также разрабатываю сервисы на Go и Python. Мне интересны системы, где за кодом видно поведение целого мира — так и появился StadMagic: самостоятельная живая площадка для ботов и их авторов.</p><p class="about-community">Участвую в сообществе ClickHouse. В свободном доступе — код игры, устройство сервера и инструменты для подключения собственного бота.</p><div class="about-links"><a class="button github-link" href="https://github.com/bytadaniel/dats-magic" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.53v-2.04c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.24-1.65-1.24-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 1.7 2.62 1.21 3.26.93.1-.72.39-1.21.71-1.49-2.47-.28-5.06-1.24-5.06-5.5 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.14 3.05-1.14.61 1.53.23 2.67.11 2.95.72.78 1.15 1.77 1.15 2.99 0 4.27-2.59 5.21-5.07 5.49.4.35.76 1.02.76 2.06V22c0 .29.2.63.76.52A11.1 11.1 0 0 0 12 .9Z"/></svg>Код StadMagic</a><a class="button secondary github-link" href="https://github.com/bytadaniel" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.53v-2.04c-3.1.68-3.75-1.32-3.75-1.32-.5-1.3-1.24-1.65-1.24-1.65-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 1.7 2.62 1.21 3.26.93.1-.72.39-1.21.71-1.49-2.47-.28-5.06-1.24-5.06-5.5 0-1.22.44-2.21 1.15-2.99-.12-.28-.5-1.42.11-2.95 0 0 .94-.3 3.05 1.14a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.14 3.05-1.14.61 1.53.23 2.67.11 2.95.72.78 1.15 1.77 1.15 2.99 0 4.27-2.59 5.21-5.07 5.49.4.35.76 1.02.76 2.06V22c0 .29.2.63.76.52A11.1 11.1 0 0 0 12 .9Z"/></svg>GitHub автора</a></div></div><span class="inspiration-mark" aria-hidden=true>⌘</span></section>
+    <section class="home-resources" aria-label="Дополнительная информация"><a class="resource-link" href="/docs"><span><b>Документация</b><small>Правила мира и контракт игрового API</small></span><strong>Читать →</strong></a><a class="resource-link resource-worlds" href="/worlds"><span><b>Каталог миров</b><small>Профили, особенности и условия арен</small></span><strong>Посмотреть →</strong></a></section>
+    <script>
+      const homeCountdown=document.querySelector('#home-countdown');let homeDeadline=Date.now(),homeActive={},podiumScope='all',podiumRequest=0,podiumSignature='';
+      function renderHomeCountdown(){const remaining=Math.max(0,Math.ceil((homeDeadline-Date.now())/1000)),minutes=Math.floor(remaining/60),seconds=remaining%60;homeCountdown.textContent=`${minutes}:${String(seconds).padStart(2,'0')}`}
+      function podiumNumber(value){return Math.round(Number(value)||0).toLocaleString('ru-RU')}function podiumKilometers(value){return (Number(value||0)/1000).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}
+      async function animatePodium(render,signature){const host=document.querySelector('#home-top-teams'),revision=podiumRequest;if(signature===podiumSignature)return;podiumSignature=signature;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;if(!reduce&&host.childElementCount){host.classList.add('podium-switching');try{await host.animate([{opacity:1,filter:'blur(0)',transform:'translateY(0)'},{opacity:0,filter:'blur(5px)',transform:'translateY(8px)'}],{duration:150,easing:'ease-in'}).finished}catch(_){}}if(revision!==podiumRequest)return;render();host.classList.remove('podium-switching');if(!reduce)host.animate([{opacity:0,filter:'blur(5px)',transform:'translateY(-7px)'},{opacity:1,filter:'blur(0)',transform:'translateY(0)'}],{duration:360,easing:'cubic-bezier(.2,.7,.2,1)'})}
+      function renderPodiumError(message){const host=document.querySelector('#home-top-teams');host.replaceChildren();const note=document.createElement('div');note.className='podium-message';note.textContent=message;host.append(note)}
+      async function refreshHomePodium(){const request=++podiumRequest,host=document.querySelector('#home-top-teams'),meta=document.querySelector('#home-podium-meta'),link=document.querySelector('#home-podium-full-link'),subtitle=document.querySelector('#home-podium-subtitle');if(podiumScope==='current'&&!homeActive.run_id){meta.textContent='Арена готовится';subtitle.textContent='Рейтинг появится после первых результатов';link.href='/arena';await animatePodium(()=>renderPodiumError('На этой арене пока нет результатов. Будь среди первых команд — или загляни чуть позже.'),`${podiumScope}:pending`);return}const params=new URLSearchParams({scope:podiumScope==='all'?'all':'run'});if(podiumScope==='current')params.set('run_id',homeActive.run_id);const href=podiumScope==='all'?'/leaderboard?scope=all':`/leaderboard?run_id=${encodeURIComponent(homeActive.run_id)}`;link.href=href;subtitle.textContent=podiumScope==='all'?'Суммарные результаты команд за всю историю':'Золото и дистанция лидеров арены';try{const response=await fetch('/api/leaderboard?'+params.toString()),data=await response.json();if(request!==podiumRequest)return;if(!response.ok)throw Error(data.error||'Не удалось загрузить рейтинг');const teams=(data.teams||[]).slice(0,3),signature=`${podiumScope}:${JSON.stringify(teams)}`;meta.textContent=teams.length?`Команд в рейтинге: ${data.teams.length}`:'Пока нет команд в рейтинге';await animatePodium(()=>{host.replaceChildren();if(!teams.length){renderPodiumError(podiumScope==='all'?'Рейтинг начнёт складываться, когда команды сыграют первые арены.':'Пока никто не попал в таблицу этой арены. Результаты появятся после первого игрового отчёта.');return}for(const team of teams){const totals=podiumScope==='all'?(team.total||{}):team;const card=document.createElement('a');card.className=`podium-team podium-place-${team.rank}`;card.href=href;card.setAttribute('aria-label',`Место ${team.rank}: ${team.name}, ${podiumNumber(totals.gold)} золота, ${(Number(totals.distance_travelled||0)/1000).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})} километров пройдено`);const rank=document.createElement('span');rank.className='podium-rank';rank.textContent=String(team.rank).padStart(2,'0');const identity=document.createElement('span');identity.className='podium-team-identity';const name=document.createElement('strong');name.className='podium-team-name';name.textContent=team.name;const label=document.createElement('small');label.textContent=team.rank===1?'Лидер гонки':`Место в рейтинге · ${team.rank}`;identity.append(name,label);const values=document.createElement('span');values.className='podium-values';for(const [caption,value,icon] of [['золото',totals.gold,'✦'],['пройдено, км',totals.distance_travelled,'↗']]){const stat=document.createElement('span');stat.className='podium-stat';const glyph=document.createElement('i');glyph.setAttribute('aria-hidden','true');glyph.textContent=icon;const text=document.createElement('span');const number=document.createElement('b');number.textContent=caption==='пройдено, км'?podiumKilometers(value):podiumNumber(value);const unit=document.createElement('small');unit.textContent=caption;text.append(number,unit);stat.append(glyph,text);values.append(stat)}const arrow=document.createElement('span');arrow.className='podium-card-arrow';arrow.setAttribute('aria-hidden','true');arrow.textContent='↗';card.append(rank,identity,values,arrow);host.append(card)}},signature)}catch(error){if(request===podiumRequest){meta.textContent='Не удалось обновить рейтинг';await animatePodium(()=>renderPodiumError(error.message),`${podiumScope}:error:${error.message}`)}}}
+      document.querySelectorAll('.podium-scope').forEach(button=>button.addEventListener('click',()=>{podiumScope=button.dataset.scope;document.querySelectorAll('.podium-scope').forEach(item=>{const active=item===button;item.classList.toggle('is-active',active);item.setAttribute('aria-pressed',String(active))});refreshHomePodium()}));
+      async function refreshHome(){try{const d=await(await fetch('/api/worlds')).json(),a=d.active||{},phases={running:['Матч идёт','phase-running'],cooldown:['Перерыв между аренами','phase-cooldown'],starting:['Арена запускается','phase-starting'],stopping:['Арена завершает работу','phase-cooldown'],error:['Ошибка запуска','phase-error'],idle:['Ожидание арены','phase-starting']},[label,phaseClass]=phases[a.status]||['Подготовка арены','phase-starting'],status=document.querySelector('#home-status');homeActive=a;document.querySelector('#home-world').textContent=a.world_name||'Подготовка арены';status.textContent=label;status.className=`phase-badge ${phaseClass}`;document.querySelector('#home-players').textContent=Number(a.active_players)||0;homeDeadline=Date.now()+Math.max(0,Number(a.seconds_remaining)||0)*1000;renderHomeCountdown();refreshHomePodium()}catch(_){document.querySelector('#home-status').textContent='Нет связи с ареной';document.querySelector('#home-status').className='phase-badge phase-error' }}
+      refreshHome();setInterval(refreshHome,5000);setInterval(renderHomeCountdown,1000);
+    </script>
     """
     values = {
         "__WORLD_NAME__": esc(arena.get("world_name") or "Подготовка арены"),
-        "__ARENA_NAME__": esc(arena.get("arena_name") or "Ожидание"),
-        "__ARENA_STATUS__": esc(arena.get("status", "starting")),
-        "__COUNTDOWN__": str(arena.get("seconds_remaining", 0)),
-        "__ARENA_URL__": esc(arena.get("url", f"http://{ARENA_PUBLIC_HOST}:{ARENA_PORT}")),
     }
     for placeholder, value in values.items():
         body = body.replace(placeholder, value)
@@ -766,71 +869,124 @@ def home_html(state: HubState) -> bytes:
 
 def arena_visualizer_html() -> bytes:
     body = '''
-    <link rel="stylesheet" href="/static/arena-visualizer.css">
+    <link rel="stylesheet" href="/static/arena-visualizer.css?v=8.4">
     <section class="visualizer-shell">
-      <div class="visualizer-top card">
-        <div><span class="eyebrow">ЖИВАЯ АРЕНА</span><h1>Наблюдение</h1><p>Лёгкая карта мира. Выбор и слежение не включают управление.</p></div>
-        <form id="connect-form" class="connect-form"><label for="viz-token">Токен команды <span class="muted">(необязательно для наблюдения)</span></label><div class="connect-row"><input id="viz-token" type="password" autocomplete="off" placeholder="Вставь зарегистрированный токен"><button type="submit">Мой флот</button><button id="observer-connect" type="button" class="secondary">Наблюдать</button></div></form>
-      </div>
+      <header class="arena-page-heading"><h1>Арена</h1><div id="arena-connection-status" class="arena-connection-status connecting" aria-live="polite"><i aria-hidden="true"></i><span>Подключаемся</span></div></header>
+      <section class="arena-context" aria-live="polite">
+        <div class="arena-context-head"><div class="arena-context-copy"><span id="arena-phase" class="arena-phase">ЗАГРУЗКА АРЕНЫ</span><h2 id="arena-title">Подключаемся к Hub…</h2><p id="arena-description">Получаем описание текущего мира.</p></div><div class="context-time"><span id="arena-time-label">ДО СМЕНЫ МИРА</span><strong id="arena-countdown" class="countdown-calm">—</strong></div></div>
+        <div class="arena-context-details"><div class="arena-context-facts"><span class="context-fact"><span class="context-fact-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5 9 3l6 2.5L20 3v15.5L15 21l-6-2.5L4 21zM9 3v15.5m6-13V21"/></svg>Карта</span><b id="arena-size">—</b><small id="arena-size-note" class="context-fact-note"></small></span><span class="context-fact context-fact-gold"><span class="context-fact-label"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="5.5"/><path d="M12 8v8m2-6h-3a1.5 1.5 0 0 0 0 3h2a1.5 1.5 0 0 1 0 3h-3"/></svg><span>✦ Золото на карте</span></span><b id="arena-bounties">—</b><small id="arena-bounties-note" class="context-fact-note"></small></span><span class="context-fact"><span class="context-fact-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 2 5 13h6l-.5 9L19 10h-6z"/><path d="M3 7h2m14 9h2M5 19l1.5-1.5M18 5l1.5-1.5"/></svg>Аномалии</span><b id="arena-anomalies">—</b><small id="arena-anomalies-note" class="context-fact-note"></small></span></div><div class="arena-world-profile" id="arena-world-profile"><span class="arena-profile-label">АНОМАЛИИ · РАЗМЕР ОТНОСИТЕЛЬНО КАРТЫ</span><div id="arena-world-traits" class="arena-world-traits"></div></div><div class="arena-world-rules" aria-label="Правила текущего мира"><span><small>Ковров на команду</small><b id="world-carpet-count">—</b></span><span><small>Макс. скорость ковра</small><b id="world-carpet-speed">—</b></span><span><small>Макс. ускорение</small><b id="world-carpet-acceleration">—</b></span><span><small>Сохраняет скорость</small><b id="world-friction">—</b></span><span><small>Монеты появляются</small><b id="world-coin-spawn" class="world-boolean">—</b></span><span><small>Аномалии появляются</small><b id="world-anomaly-spawn" class="world-boolean">—</b></span><span><small>Респавн ковров</small><b id="world-carpet-respawn" class="world-boolean">—</b></span></div></div>
+      </section>
+      <details class="arena-voting"><summary><span><b>Выбрать следующий мир</b><small>Голос команды влияет на следующую арену</small></span><em id="arena-vote-total">Загрузка голосов…</em></summary><div class="disclosure-content"><div class="disclosure-inner"><div class="arena-vote-layout"><form id="arena-vote-form"><label>Мир<select id="arena-vote-world" required></select></label><p id="arena-vote-identity" class="vote-identity">Войди через кнопку профиля вверху сайта, чтобы проголосовать.</p><button type="submit">Проголосовать <span aria-hidden="true">→</span></button><small id="arena-vote-status" role="status" aria-live="polite"></small></form><div id="arena-vote-list" class="arena-vote-list"></div></div></div></div></details>
+      <section class="visualizer-top card">
+        <div class="arena-mode-card" id="arena-mode-card" data-mode="observer" aria-live="polite"><div class="arena-mode-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5 20.5 12 12 20.5 3.5 12 12 3.5Z"/><circle cx="12" cy="12" r="2.4"/></svg></div><div class="arena-mode-copy"><div class="arena-mode-meta"><span class="eyebrow"><i class="live-dot"></i>ЖИВАЯ АРЕНА</span><span id="arena-mode-badge" class="arena-mode-badge">НАБЛЮДАТЕЛЬ</span></div><h1 id="arena-entry-title">Наблюдаешь за ареной</h1><h2 id="arena-entry-name">Публичный просмотр</h2><p id="arena-entry-status">Карта открыта для всех.</p><small id="arena-entry-description">Выбор ковра не включает управление.</small></div><button id="arena-team-connect" class="secondary mode-switch" type="button">Играть <span aria-hidden="true">↗</span></button></div>
+      </section>
+      <section id="viz-gold-summary" class="viz-gold-summary without-own" aria-label="Золото и смерти команд арены"><div class="viz-gold-own" id="viz-own-summary" hidden><span>ВАША КОМАНДА</span><strong id="viz-own-gold">—</strong><small id="viz-own-name">Золото сейчас</small><small class="viz-own-deaths"><svg class="viz-death-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8c0 3 1.5 4.7 3.4 5.8V21h9.2v-4.2C18.5 15.7 20 14 20 11a8 8 0 0 0-8-8ZM8.5 10h.01M15.5 10h.01M9 14c1.8 1.3 4.2 1.3 6 0M9 18v3m6-3v3"/></svg>Смерти <b id="viz-own-deaths">0</b></small></div><div class="viz-gold-leaders-wrap"><span class="eyebrow">ТОП-3 · ТЕКУЩАЯ АРЕНА</span><div id="viz-gold-leaders" class="viz-gold-leaders" data-count="0"><div class="viz-gold-leader viz-gold-placeholder rank-1" data-place="1"><b class="viz-gold-rank">#1</b><span class="viz-gold-team">Место свободно</span><div class="viz-gold-metrics"><strong class="viz-gold-value">—</strong><small class="viz-gold-deaths"><svg class="viz-death-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8c0 3 1.5 4.7 3.4 5.8V21h9.2v-4.2C18.5 15.7 20 14 20 11a8 8 0 0 0-8-8ZM8.5 10h.01M15.5 10h.01M9 14c1.8 1.3 4.2 1.3 6 0M9 18v3m6-3v3"/></svg>—</small></div></div><div class="viz-gold-leader viz-gold-placeholder rank-2" data-place="2"><b class="viz-gold-rank">#2</b><span class="viz-gold-team">Место свободно</span><div class="viz-gold-metrics"><strong class="viz-gold-value">—</strong><small class="viz-gold-deaths"><svg class="viz-death-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8c0 3 1.5 4.7 3.4 5.8V21h9.2v-4.2C18.5 15.7 20 14 20 11a8 8 0 0 0-8-8ZM8.5 10h.01M15.5 10h.01M9 14c1.8 1.3 4.2 1.3 6 0M9 18v3m6-3v3"/></svg>—</small></div></div><div class="viz-gold-leader viz-gold-placeholder rank-3" data-place="3"><b class="viz-gold-rank">#3</b><span class="viz-gold-team">Место свободно</span><div class="viz-gold-metrics"><strong class="viz-gold-value">—</strong><small class="viz-gold-deaths"><svg class="viz-death-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8c0 3 1.5 4.7 3.4 5.8V21h9.2v-4.2C18.5 15.7 20 14 20 11a8 8 0 0 0-8-8ZM8.5 10h.01M15.5 10h.01M9 14c1.8 1.3 4.2 1.3 6 0M9 18v3m6-3v3"/></svg>—</small></div></div></div></div></section>
       <div class="visualizer-layout">
-        <section class="visualizer-stage card">
+        <section class="visualizer-stage">
           <div class="viz-toolbar">
-            <label class="select-label">Следить за<select id="carpet-select" disabled><option>Подключись к арене</option></select></label>
-            <button id="follow-toggle" class="secondary" disabled>◎ Следить</button>
-            <button id="manual-toggle" class="secondary" disabled>Ручное управление: выкл.</button>
-            <button id="zoom-out" class="secondary" aria-label="Уменьшить">−</button><button id="zoom-in" class="secondary" aria-label="Увеличить">+</button>
-            <button id="camera-reset" class="secondary">Обзор</button><button id="fullscreen-toggle" class="secondary">⛶ На весь экран</button>
+            <label class="select-label"><span>Ковёр</span><select id="carpet-select" disabled><option>Подключись к арене</option></select></label>
+            <div class="viz-toolbar-actions" aria-label="Управление картой">
+              <button id="follow-toggle" class="secondary" disabled title="Центрировать камеру на выбранном ковре">◎ Следить</button>
+              <button id="manual-toggle" class="secondary" disabled title="Передать выбранный ковер под ручное управление">Ручное</button>
+              <div class="camera-tools" aria-label="Масштаб и обзор"><button id="zoom-out" class="secondary" aria-label="Уменьшить">−</button><button id="zoom-in" class="secondary" aria-label="Увеличить">+</button><button id="camera-reset" class="secondary">Обзор</button></div>
+              <button id="fullscreen-toggle" class="secondary" aria-label="Полноэкранный режим">⛶</button>
+            </div>
           </div>
-          <div class="canvas-wrap"><canvas id="arena-canvas" aria-label="Карта арены"></canvas><div id="touch-stick" class="touch-stick" aria-label="Виртуальный стик"><div class="stick-base"><i></i></div><span>тяни для ускорения</span></div><div id="connection-badge" class="connection-badge">Нет подключения</div></div>
-          <div class="viz-footer"><span id="world-label">Мир не загружен</span><span id="fps-label">— FPS</span><span>Колесо / щипок — зум · перетаскивание / стрелки — карта</span></div>
+          <div class="canvas-wrap"><canvas id="arena-canvas" aria-label="Карта арены"></canvas><div id="fps-label" class="viz-fps" aria-live="off">— FPS</div><div id="touch-stick" class="touch-stick" aria-label="Виртуальный стик"><div class="stick-base"><i></i></div><span>тяни для ускорения</span></div><div id="connection-badge" class="connection-badge">Нет подключения</div></div>
         </section>
-        <aside class="viz-sidebar">
-          <section class="card selected-panel"><span class="eyebrow">ВЫБРАННЫЙ КОВЁР</span><h2 id="selected-title">Ничего не выбрано</h2><div id="selected-stats" class="selected-stats muted">Наблюдай без токена или подключи свой флот.</div><div class="vector-legend"><span><i class="v-speed"></i>Скорость V</span><span><i class="v-self"></i>Ускорение A</span><span><i class="v-anomaly"></i>Силы аномалий W</span></div></section>
-          <section class="card viz-help"><h2>Управление</h2><p><b>ПК:</b> колесо — масштаб, перетаскивание или стрелки — перемещение, клик по ковру — выбор. Включи слежение отдельно.</p><p><b>Телефон:</b> один палец — карта, два — масштаб. Для ручного режима выбери свой ковер и потяни виртуальный стик.</p><p>Ручное управление работает только для твоего живого ковра. При включении бот временно уступает ему управление.</p></section>
-        </aside>
       </div>
+      <details class="viz-help-disclosure">
+        <summary><span><b>Как пользоваться визуализацией</b><small>ПК: колесо и перетаскивание · телефон: жесты и стик</small></span></summary>
+        <div class="disclosure-content"><div class="disclosure-inner"><section class="viz-help" aria-label="Подсказки управления"><div class="viz-help-heading"><span class="eyebrow">КОРОТКО ОБ УПРАВЛЕНИИ</span><h2>Карта и ручной режим</h2></div><div class="viz-help-grid"><div class="viz-help-item"><i class="help-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4M6 8h12"/></svg></i><span><b>Компьютер</b><small>Колесо — зум · перетаскивай карту · клик — выбрать ковер · стрелки — двигать обзор.</small></span></div><div class="viz-help-item"><i class="help-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10 5h4m-3 14h2"/></svg></i><span><b>Телефон</b><small>Один палец — карта · два — зум. Стик появляется в ручном режиме.</small></span></div><div class="viz-help-item"><i class="help-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19 19 5m-8 0h8v8"/><circle cx="5" cy="19" r="2"/></svg></i><span><b>Вести ковер</b><small>Выбери свой ковер и включи ручной режим. Бот уступит управление.</small></span></div></div><div class="viz-help-legend"><h3>Что показывают линии и точки</h3><div class="vector-legend"><span><i class="v-speed"></i>Скорость V</span><span><i class="v-self"></i>Ускорение A</span><span><i class="v-anomaly"></i>Силы аномалий W</span><span><i class="v-trajectory"></i>Будущий путь · 20 с</span><span><i class="v-history"></i>Фактический путь · 10 с</span><span><i class="v-collected"></i>Собранная монета</span></div><small id="trajectory-note" class="trajectory-note">Выбери ковер, чтобы увидеть его путь с учётом движения аномалий.</small><h3>Объекты карты</h3><div class="map-guide-items"><span><i class="legend-dot legend-gold"></i>золотая монета — собрать золото</span><span><i class="legend-dot legend-own"></i>жёлтый ковер — ваша команда</span><span><i class="legend-dot legend-team"></i>цветной ковер — другая команда</span><span><i class="legend-ring legend-blue"></i>синяя область — отталкивание</span><span><i class="legend-ring legend-red"></i>красная область — притяжение</span><span><i class="legend-core"></i>залитое ядро аномалии — смертельно опасно</span></div></div></section></div></div>
+      </details>
+      <details class="world-settings"><summary>Технические параметры мира</summary><div class="disclosure-content"><div class="disclosure-inner"><dl id="arena-world-settings"><div><dt>Загрузка…</dt><dd>—</dd></div></dl></div></div></details>
+      <section id="arena-leaderboard" class="card arena-ranking"><div class="arena-ranking-heading"><div><span class="eyebrow">РЕЗУЛЬТАТЫ ТЕКУЩЕЙ АРЕНЫ</span><h2>Рейтинг команд</h2></div><span id="arena-ranking-updated" class="muted">Обновляется каждые 5 секунд</span></div><p id="arena-ranking-status" class="muted">Загружаю результаты…</p><div id="arena-ranking-table" class="arena-ranking-table"></div><a class="button secondary" href="/leaderboard">Все арены и итоги по мирам →</a></section>
       <p id="viz-message" class="viz-message" role="status"></p>
     </section>
+    <script>
+      (()=>{const select=document.querySelector('#arena-vote-world'),form=document.querySelector('#arena-vote-form'),list=document.querySelector('#arena-vote-list'),total=document.querySelector('#arena-vote-total'),identity=document.querySelector('#arena-vote-identity'),status=document.querySelector('#arena-vote-status');let previousPositions=new Map();const storedToken=()=>{try{return localStorage.getItem('stadmagic-team-token')||''}catch(_){return ''}};function syncIdentity(){const name=(()=>{try{return localStorage.getItem('stadmagic-team-name')||''}catch(_){return ''}})();identity.textContent=name?`Голос от команды «${name}».`:'Войди через кнопку профиля вверху сайта, чтобы проголосовать.';form.querySelector('button[type=submit]').disabled=!storedToken()}window.addEventListener('stadmagic-profile-change',syncIdentity);window.addEventListener('storage',syncIdentity);syncIdentity();async function refreshVotes(){try{const [worldResponse,voteResponse]=await Promise.all([fetch('/api/worlds'),fetch('/api/votes')]),worldData=await worldResponse.json(),voteData=await voteResponse.json();if(!worldResponse.ok||!voteResponse.ok)throw Error('Не удалось загрузить голосование');const profiles=(Array.isArray(worldData.worlds)?worldData.worlds:[]).map((world,index)=>{const id=[world?.id,world?.world_id].find(value=>typeof value==='string'&&value.trim()&&value!=='undefined')||`world-${index+1}`;const name=[world?.name,world?.display_name,world?.title].find(value=>typeof value==='string'&&value.trim()&&value!=='undefined')||`Мир ${String(index+1).padStart(2,'0')}`;return {...world,id,name}});if(select.options.length!==profiles.length)select.replaceChildren(...profiles.map(world=>new Option(`${world.name} · ${world.id}`,world.id)));const votes=voteData.worlds||[],byId=new Map(votes.map(item=>[item.world_id,item.votes||0]));const ranked=[...profiles].map(world=>({...world,votes:byId.get(world.id)||0})).sort((a,b)=>b.votes-a.votes||a.name.localeCompare(b.name,'ru'));total.textContent=`${voteData.total_votes||0} голосов`;previousPositions=new Map([...list.children].map(row=>[row.dataset.worldId,row.getBoundingClientRect().top]));list.replaceChildren();if(!ranked.length){list.textContent='Нет доступных миров.';return}const max=Math.max(1,...ranked.map(item=>item.votes));for(const [index,world] of ranked.slice(0,6).entries()){const row=document.createElement('div');row.className=`arena-vote-row vote-place-${index+1}`;row.dataset.worldId=world.id;const rank=document.createElement('b');rank.className='vote-rank';rank.textContent=String(index+1).padStart(2,'0');const label=document.createElement('span');label.textContent=world.name;const bar=document.createElement('i');bar.style.setProperty('--vote-fill',`${world.votes/max*100}%`);const count=document.createElement('strong');count.textContent=String(world.votes);row.append(rank,label,bar,count);list.append(row)}for(const row of list.children){const oldTop=previousPositions.get(row.dataset.worldId);if(oldTop===undefined||matchMedia('(prefers-reduced-motion: reduce)').matches)continue;const dy=oldTop-row.getBoundingClientRect().top;if(Math.abs(dy)>1){row.animate([{transform:`translateY(${dy}px)`},{transform:'translateY(0)'}],{duration:520,easing:'cubic-bezier(.2,.75,.25,1)'})}}}catch(error){total.textContent=error.message}}form.addEventListener('submit',async event=>{event.preventDefault();const token=storedToken();if(!token){status.textContent='Сначала войди с токеном команды через профиль вверху сайта.';status.className='error';return}const button=form.querySelector('button[type=submit]');button.disabled=true;status.textContent='Отправляем голос…';try{const response=await fetch('/api/votes',{method:'POST',headers:{'content-type':'application/json','X-Auth-Token':token},body:JSON.stringify({world_id:select.value})}),data=await response.json();if(!response.ok)throw Error(data.error||'Голос не принят');status.textContent='Голос учтён. Его можно изменить до следующего запуска.';status.className='ok';await refreshVotes()}catch(error){status.textContent=error.message;status.className='error'}finally{syncIdentity()}});refreshVotes();setInterval(refreshVotes,10000)})();
+    </script>
     <script src="/static/arena-visualizer.js" defer></script>
     '''
+    body = body.replace('<details class="arena-voting">', '<details class="arena-voting" open>')
+    body = body.replace(
+        '<summary><span><b>Выбрать следующий мир</b><small>Голос команды влияет на следующую арену</small></span>',
+        '<summary><span class="vote-summary-copy"><span class="vote-summary-closed"><b>Следующий мир · <i id="arena-vote-next">Случайный мир</i></b><small id="arena-vote-summary-note">Пока нет голосов · выбор из каталога</small></span><span class="vote-summary-open"><b>Голосование за следующий мир</b><small>Слева — рейтинг голосов, справа — выбор команды</small></span></span>',
+    )
+    body = body.replace(
+        '<form id="arena-vote-form">',
+        '<form id="arena-vote-form"><div class="vote-form-heading"><span class="eyebrow">ТВОЙ ВЫБОР</span><h3>Какой мир следующим?</h3><p>Один голос от команды. Его можно изменить до конца текущей арены.</p></div>',
+    )
+    countdown = '<div class="context-time"><span id="arena-time-label">ДО СМЕНЫ МИРА</span><strong id="arena-countdown" class="countdown-calm">—</strong></div>'
+    body = body.replace(countdown, '')
+    body = body.replace(
+        '<button id="arena-team-connect"',
+        countdown.replace('class="context-time"', 'class="mode-countdown"') + '<button id="arena-team-connect"',
+    )
+    mode_button = '<button id="arena-team-connect" class="secondary mode-switch" type="button">Играть <span aria-hidden="true">↗</span></button>'
+    body = body.replace(
+        countdown.replace('class="context-time"', 'class="mode-countdown"') + mode_button,
+        '<div class="mode-side-actions">' + mode_button + countdown.replace('class="context-time"', 'class="mode-countdown"') + '</div>',
+    )
+    body = body.replace(
+        '    <script src="/static/arena-visualizer.js" defer></script>',
+        '''    <script>
+      (()=>{const details=document.querySelector('.arena-voting'),list=document.querySelector('#arena-vote-list'),totalNode=document.querySelector('#arena-vote-total'),next=document.querySelector('#arena-vote-next'),note=document.querySelector('#arena-vote-summary-note'),closed=document.querySelector('.vote-summary-closed'),opened=document.querySelector('.vote-summary-open'),voteWord=count=>({one:'голос',few:'голоса',many:'голосов',other:'голосов'}[new Intl.PluralRules('ru-RU').select(count)]);if(details)details.open=true;const syncDisclosure=()=>{closed.setAttribute('aria-hidden',String(details.open));opened.setAttribute('aria-hidden',String(!details.open))};details.addEventListener('toggle',syncDisclosure);syncDisclosure();const refreshSummary=()=>{const rows=[...list.querySelectorAll('.arena-vote-row')].map(row=>({name:row.children[1]?.textContent||'',votes:Number(row.children[3]?.textContent)||0}));const total=Number((totalNode.textContent.match(/\\d+/)||[])[0])||0;const totalLabel=`${total} ${voteWord(total)}`;if(totalNode.textContent!==totalLabel)totalNode.textContent=totalLabel;if(!total||!rows.length){next.textContent='Случайный мир';note.textContent='Пока нет голосов · выбор из каталога';return}const max=Math.max(...rows.map(row=>row.votes)),leaders=rows.filter(row=>row.votes===max);if(leaders.length===1){next.textContent=leaders[0].name;note.textContent='Лидер голосования'}else{next.textContent='Жребий среди лидеров';note.textContent='Несколько миров набрали поровну'}};if(list){const observer=new MutationObserver(refreshSummary);observer.observe(list,{childList:true,subtree:true,characterData:true});observer.observe(totalNode,{childList:true,characterData:true,subtree:true});refreshSummary()}})();
+    </script>
+    <script src="/static/arena-visualizer.js" defer></script>''',
+    )
     return page("Живая арена · StadMagic", body)
 
 
 def docs_html() -> bytes:
     body = """
-    <h1>Документация</h1><section class=card><p>Всё необходимое, чтобы зарегистрировать команду и подключить игрового бота.</p>
-    <div class=tabs><a class=button href="/docs/api">Игровой API</a><a class=button href="/docs/world">Как играть и написать бота</a><a class=button href="/api/docs/mechanics">Техническая механика (Markdown)</a></div></section>
+    <section class=docs-hero><span class=eyebrow>STADMAGIC · DOCS</span><h1>От первого запроса<br>до живой арены.</h1><p>Короткий маршрут для тех, кто хочет подключиться к игре: сначала разберись с игровым контрактом, затем изучи мир и устройство матча.</p></section>
+    <section class=docs-cards aria-label="Документы"><a class=docs-card href="/docs/api"><span class=docs-card-icon aria-hidden=true>⌘</span><h2>Игровое API</h2><p>Формат запроса и ответа, авторизация, ошибки и готовый пример вызова.</p><strong>Открыть контракт →</strong></a><a class=docs-card href="/docs/world"><span class=docs-card-icon aria-hidden=true>◇</span><h2>Правила мира</h2><p>Сущности, физика, арены, ковры, золото и жизненный цикл игрового запроса.</p><strong>Изучить игру →</strong></a></section>
+    <aside class=docs-more>Нужны детали внутренней симуляции? <a href="/api/docs/mechanics">Открыть техническую механику сервера</a>.</aside>
     """
     return page("Документация · StadMagic", body)
 
 
 def register_html() -> bytes:
     body = """
-    <h1>Регистрация команды</h1><section class=card><p>Придумайте уникальное имя команды. Hub создаст токен автоматически — сохраните его: повторно показать секрет нельзя. Токен нужен боту для каждого игрового запроса.</p>
-    <form id=f><label for=n>Имя команды</label><input id=n maxlength=48 autocomplete=organization required><p><button>Создать команду и токен</button></p></form><div id=result role=status aria-live=polite></div></section>
-    <script>document.querySelector('#f').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.querySelector('#n').value})});const d=await r.json();const out=document.querySelector('#result');out.replaceChildren();out.className=r.ok?'ok':'error';if(!r.ok){out.textContent=d.error||'Ошибка';return}const title=document.createElement('p');title.textContent=`Команда ${d.name} создана. Сохраните токен сейчас:`;const token=document.createElement('code');token.textContent=d.token;token.style='display:block;overflow-wrap:anywhere;padding:1rem;margin:.75rem 0';const copy=document.createElement('button');copy.type='button';copy.textContent='Скопировать токен';copy.onclick=async()=>{await navigator.clipboard.writeText(d.token);copy.textContent='Скопировано'};const warning=document.createElement('p');warning.textContent='Токен показывается только один раз. Не отправляйте его другим и не публикуйте.';out.append(title,token,copy,warning);document.querySelector('#f').reset()});</script>
+    <h1>Создай команду</h1><p>Придумай имя, получи токен и подключи бота к соревнованию. Имя будет видно всем, токен — только тебе.</p>
+    <div class="team-register-layout"><section class="card team-create-card"><span class=eyebrow>Начать играть</span><h2>Регистрация</h2><p>Токен понадобится боту для игровых запросов. Сохрани его сразу — повторно показать секрет нельзя.</p>
+    <form id="team-create-form"><label for="team-name">Имя команды</label><div class="team-name-control"><input id="team-name" maxlength="48" autocomplete="organization" required placeholder="Например, Синий бархан"><button id="generate-team-name" class="secondary name-generate" type="button" aria-label="Сгенерировать другое имя">↻ <span>Сгенерировать</span></button></div><button class="team-submit" type="submit">Создать команду и получить токен <span aria-hidden="true">↗</span></button></form><div id="registration-result" class="registration-result" role="status" aria-live="polite"></div></section>
+    <section class="card team-directory-card"><div class=team-directory-heading><div><span class=eyebrow>Участники</span><h2>Зарегистрированные команды</h2></div><span id=team-count class=team-count>—</span></div><p class=team-directory-note>Имена видны всем участникам. Секретные токены здесь не отображаются.</p><label class=visually-hidden for=team-search>Найти команду</label><input id=team-search type=search placeholder="Найти команду…"><p id=team-list-status class=team-list-status role=status>Загружаю команды…</p><ul id=registered-teams class=registered-teams aria-live=polite></ul></section></div>
+    <script>
+      const form=document.querySelector('#team-create-form'),nameInput=document.querySelector('#team-name'),result=document.querySelector('#registration-result'),teamList=document.querySelector('#registered-teams'),teamSearch=document.querySelector('#team-search'),teamCount=document.querySelector('#team-count'),teamStatus=document.querySelector('#team-list-status');
+      const nameAdjectives=['Быстрый','Золотой','Дальний','Тихий','Северный','Лунный','Пыльный','Смелый','Упрямый','Летучий','Искристый','Скрытный','Медный','Вольный'];
+      const nameNouns=['Бархан','Шакал','Вихрь','Оазис','Компас','Метеор','Мираж','Сокол','Фантом','Следопыт','Странник','Дракон','Караван','Скакун','Ракетчик','Пилигрим'];
+      function randomItem(items){if(window.crypto?.getRandomValues){const n=new Uint32Array(1);window.crypto.getRandomValues(n);return items[n[0]%items.length]}return items[Math.floor(Math.random()*items.length)]}
+      function generateName(){nameInput.value=`${randomItem(nameAdjectives)} ${randomItem(nameNouns)}`}
+      document.querySelector('#generate-team-name').addEventListener('click',generateName);generateName();
+      let teams=[],myTeamName='';try{myTeamName=localStorage.getItem('stadmagic-team-name')||''}catch(_){}
+      function renderTeams(){const query=teamSearch.value.trim().toLocaleLowerCase('ru'),visible=teams.filter(t=>t.name.toLocaleLowerCase('ru').includes(query)).sort((a,b)=>Number(b.name===myTeamName)-Number(a.name===myTeamName)||a.name.localeCompare(b.name,'ru'));teamList.replaceChildren();for(const team of visible){const row=document.createElement('li');row.className='registered-team'+(team.name===myTeamName?' own-team':'');const name=document.createElement('span');name.textContent=team.name;row.append(name);if(team.name===myTeamName){const marker=document.createElement('b');marker.className='team-you-marker';marker.textContent='Ваша команда';row.append(marker)}teamList.append(row)}teamStatus.textContent=visible.length?`Показано: ${visible.length}`:'Команды не найдены';teamCount.textContent=String(teams.length)}
+      async function refreshTeams(){try{const response=await fetch('/api/teams'),data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось загрузить команды');teams=data.teams||[];renderTeams()}catch(error){teamStatus.textContent='Не удалось загрузить список команд'}}
+      teamSearch.addEventListener('input',renderTeams);refreshTeams();setInterval(refreshTeams,15000);
+      form.addEventListener('submit',async e=>{e.preventDefault();const submit=form.querySelector('.team-submit');submit.disabled=true;result.replaceChildren();result.className='registration-result';try{const response=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:nameInput.value})}),data=await response.json();if(!response.ok){result.classList.add('error');result.textContent=String(data.error||'Не удалось создать команду').includes('already taken')?'Это имя уже занято — сгенерируй другое или введи своё.':data.error||'Не удалось создать команду';return}myTeamName=data.name;try{localStorage.setItem('stadmagic-team-token',data.token);localStorage.setItem('stadmagic-team-name',myTeamName);window.dispatchEvent(new Event('stadmagic-profile-change'))}catch(_){}result.classList.add('success');const title=document.createElement('p');title.className='token-title';title.textContent=`Команда «${data.name}» создана. Сохрани токен:`;const tokenRow=document.createElement('div');tokenRow.className='token-row';const token=document.createElement('code');token.className='token-value';token.textContent=data.token;const copy=document.createElement('button');copy.className='secondary token-copy';copy.type='button';copy.textContent='Копировать';copy.onclick=async()=>{try{await navigator.clipboard.writeText(data.token);copy.textContent='Скопировано'}catch(_){copy.textContent='Не удалось скопировать'}};const warning=document.createElement('small');warning.className='token-warning';warning.textContent='Токен сохранён в этом браузере и показан здесь один раз. Не отправляй и не публикуй его.';tokenRow.append(token,copy);result.append(title,tokenRow,warning);generateName();await refreshTeams()}catch(_){result.classList.add('error');result.textContent='Не удалось связаться с сервером. Попробуй ещё раз.'}finally{submit.disabled=false}});
+    </script>
     """
     return page("Регистрация · StadMagic", body)
 
 
 def worlds_html() -> bytes:
     body = """
-    <div class=eyebrow>Каталог миров</div><h1>Выбери, куда лететь дальше</h1>
-    <section class=card><div class=grid><label>Изучить профиль<select id=world-select></select></label><div><p id=current class=status>Подключаемся к арене…</p><small id=catalog-summary>Загружаю каталог миров…</small></div></div></section>
-    <section class=card><div class=eyebrow>Голосование команды</div><h2>Каким будет следующий мир?</h2><p>Один голос на зарегистрированную команду. Его можно поменять до выбора арены. При равенстве голосов победителя определит случай; без голосов мир тоже будет выбран случайно.</p>
-      <form id=vote-form><div class=grid><label>Ваш выбор<select id=vote-world required></select></label><label>Токен команды<input id=vote-token type=password maxlength=128 autocomplete=current-password placeholder="Токен, зарегистрированный в Hub" required></label></div><p><button>Отдать голос <span aria-hidden=true>→</span></button> <span id=vote-result role=status aria-live=polite></span></p></form>
-      <h3>Кандидаты и голоса</h3><div id=vote-list class=muted>Загружаю…</div>
-    </section>
-    <section class=card><div class=eyebrow>Профиль мира</div><h2 id=world-title>Загрузка настроек…</h2><p id=world-description></p><pre id=world-config></pre></section>
+    <section class="worlds-hero"><span class="eyebrow">АТЛАС АРЕН</span><h1>У каждого мира свой характер.</h1><p>Сравни условия, выбери профиль и посмотри, что ждёт команды. Каталог обновляется вместе с конфигурациями игры.</p><div class="worlds-current"><span class="live-dot"></span><span id=current>Подключаемся к арене…</span></div></section>
+    <section class="world-browser card"><div class="world-browser-head"><div><span class="eyebrow">МИР <b id=world-number>—</b></span><h2 id=world-title>Загрузка миров…</h2></div><div class="world-switch"><button type=button id=world-prev class=secondary aria-label="Предыдущий мир">←</button><label class=visually-hidden for=world-select>Выбрать мир</label><select id=world-select></select><button type=button id=world-next class=secondary aria-label="Следующий мир">→</button></div></div><p id=world-description class=world-description></p><div id=world-traits class=world-traits></div><div id=world-metrics class=world-metrics></div><details class=world-config><summary>Технические параметры</summary><div class=disclosure-content><div class=disclosure-inner><dl id=world-config></dl></div></div></details></section>
+    <section class="world-index"><div class=world-index-heading><div><span class=eyebrow>КАТАЛОГ</span><h2>Все миры</h2></div><span id=catalog-summary class=muted></span></div><div id=world-cards class=world-cards></div></section>
     <script>
-    let worlds=[],selectedWorld=null,catalogSignature='';
-    const select=document.querySelector('#world-select'),voteSelect=document.querySelector('#vote-world');
-    select.onchange=()=>{selectedWorld=Number(select.value);showWorld()};
-    function showWorld(){const w=worlds.find(x=>x.world_number===selectedWorld);if(!w)return;document.querySelector('#world-title').textContent=`${w.name} · ${w.id} · мир ${w.world_number}`;document.querySelector('#world-description').textContent=w.description;document.querySelector('#world-config').textContent=JSON.stringify(w.config,null,2)}
-    async function refreshVotes(){const response=await fetch('/api/votes'),data=await response.json(),host=document.querySelector('#vote-list');if(!response.ok)throw Error(data.error||'Не удалось загрузить голоса');const rows=(data.worlds||[]).filter(item=>item.votes>0).sort((a,b)=>b.votes-a.votes||a.name.localeCompare(b.name,'ru'));host.replaceChildren();if(!rows.length){host.textContent='Пока ни одной команды не проголосовало.';return}const max=Math.max(...rows.map(item=>item.votes),1);for(const item of rows){const row=document.createElement('div');row.className='vote-row';const name=document.createElement('span');name.textContent=item.name;const track=document.createElement('div');track.className='vote-track';const fill=document.createElement('div');fill.className='vote-fill';fill.style.width=`${Math.max(5,item.votes/max*100)}%`;track.append(fill);const count=document.createElement('strong');count.textContent=`${item.votes}`;row.append(name,track,count);host.append(row)}}
-    async function refresh(){try{const response=await fetch('/api/worlds'),data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось загрузить миры');worlds=data.worlds||[];const active=data.active||{},signature=worlds.map(w=>w.id).join('|');document.querySelector('#catalog-summary').textContent=`${worlds.length} профилей · каталог assets/worlds.json`;if(signature!==catalogSignature){catalogSignature=signature;const previous=select.value;select.replaceChildren();voteSelect.replaceChildren();for(const w of worlds){select.add(new Option(`${w.world_number}. ${w.name} · ${w.id}`,w.world_number));voteSelect.add(new Option(`${w.name} · ${w.id}`,w.id))}selectedWorld=worlds.some(w=>String(w.world_number)===previous)?Number(previous):(active.world_number??worlds[0]?.world_number);if(selectedWorld!=null)select.value=selectedWorld}document.querySelector('#current').textContent=active.world_number?`Сейчас: ${active.arena_name} · ${active.world_name} · ${active.status} · осталось ${active.seconds_remaining??0} сек.`:'Арена сейчас перезапускается';showWorld();await refreshVotes()}catch(error){document.querySelector('#current').textContent=`Ошибка обновления: ${error.message}`}}
-    document.querySelector('#vote-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button'),out=document.querySelector('#vote-result');button.disabled=true;out.className='muted';out.textContent='Отправляю голос…';try{const response=await fetch('/api/votes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:document.querySelector('#vote-token').value,world_id:voteSelect.value})}),data=await response.json();if(!response.ok)throw Error(data.error||'Голос не принят');out.className='ok';out.textContent='Голос принят. Его можно изменить до выбора следующего мира.';document.querySelector('#vote-token').value='';await refreshVotes()}catch(error){out.className='error';out.textContent=error.message}finally{button.disabled=false}});
-    refresh();setInterval(refresh,5000)
+    let worlds=[],selectedWorld=null,signature='';const select=document.querySelector('#world-select');
+    const nf=new Intl.NumberFormat('ru-RU');
+    function configValue(c,key,fallback='—'){const v=c[key];return v===undefined||v===null?fallback:(typeof v==='number'?nf.format(v):String(v))}
+    function describeTraits(c){const speed=Number(c.anomaly_speed_max)||0,effect=Number(c.anomaly_effect_radius_max)||0,core=Number(c.anomaly_core_radius_max)||0,force=Number(c.anomaly_force_max)||0;return [`Аномалии ${speed>300?'очень быстрые':speed>180?'быстрые':'медленные'}`,`Зоны ${effect>1800?'дальние':effect>900?'широкие':'компактные'}`,`Ядра ${core>effect*.45?'крупные':core<effect*.2?'малые':'обычные'}`,force>55?'Сильное притяжение':'Умеренные силы']}
+    function selectWorld(number){selectedWorld=Number(number);select.value=String(selectedWorld);renderWorld()}
+    function renderWorld(){const w=worlds.find(item=>Number(item.world_number)===selectedWorld);if(!w)return;const c=w.config||{};document.querySelector('#world-number').textContent=String(w.world_number).padStart(2,'0');document.querySelector('#world-title').textContent=w.name;document.querySelector('#world-description').textContent=w.description||'У этого мира пока нет описания.';document.querySelector('#world-traits').replaceChildren(...describeTraits(c).map(text=>{const tag=document.createElement('span');tag.textContent=text;return tag}));
+      const metrics=[['Арена',`${configValue(c,'arena_width')} × ${configValue(c,'arena_height')}`],['Золото',configValue(c,'bounty_quota')],['Аномалии',configValue(c,'anomaly_quota')],['Скорость ковра',configValue(c,'max_velocity')],['Скорость аномалий',`${configValue(c,'anomaly_speed_min')}–${configValue(c,'anomaly_speed_max')}`],['Зона воздействия',`${configValue(c,'anomaly_effect_radius_min')}–${configValue(c,'anomaly_effect_radius_max')}`],['Размер ядер',`${configValue(c,'anomaly_core_radius_min')}–${configValue(c,'anomaly_core_radius_max')}`],['Сила аномалий',`${configValue(c,'anomaly_force_min')}–${configValue(c,'anomaly_force_max')}`]];const host=document.querySelector('#world-metrics');host.replaceChildren(...metrics.map(([label,value])=>{const card=document.createElement('div');card.className='world-metric';const small=document.createElement('small');small.textContent=label;const strong=document.createElement('b');strong.textContent=value;card.append(small,strong);return card}));const settings=document.querySelector('#world-config');settings.replaceChildren(...Object.entries(c).filter(([key])=>key!=='runtime_entropy').map(([key,value])=>{const row=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=key.replaceAll('_',' ');dd.textContent=typeof value==='number'?nf.format(value):String(value);row.append(dt,dd);return row}));document.querySelectorAll('.world-card').forEach(card=>card.classList.toggle('is-selected',Number(card.dataset.world)===selectedWorld))}
+    function renderCards(){const host=document.querySelector('#world-cards');host.replaceChildren();if(!worlds.length){const empty=document.createElement('p');empty.className='world-catalog-state';empty.textContent='В каталоге пока нет доступных миров.';host.append(empty);return}for(const w of worlds){const button=document.createElement('button');button.type='button';button.className='world-card';button.dataset.world=String(w.world_number);const number=document.createElement('span');number.className='world-card-number';number.textContent=String(w.world_number).padStart(2,'0');const copy=document.createElement('span');copy.className='world-card-copy';const name=document.createElement('b');name.textContent=w.name;const description=document.createElement('small');description.textContent=w.description||`Профиль мира ${String(w.world_number).padStart(2,'0')}`;copy.append(name,description);const arrow=document.createElement('span');arrow.className='world-card-arrow';arrow.textContent='↗';button.append(number,copy,arrow);button.addEventListener('click',()=>{selectWorld(w.world_number);document.querySelector('.world-browser').scrollIntoView({behavior:'smooth',block:'start'})});host.append(button)}renderWorld()}
+    function normalizeWorld(world,index){const worldNumber=Number.isInteger(Number(world?.world_number))&&Number(world.world_number)>0?Number(world.world_number):index+1;const id=[world?.id,world?.world_id].find(value=>typeof value==='string'&&value.trim()&&value!=='undefined')||`world-${String(worldNumber).padStart(2,'0')}`;const name=[world?.name,world?.display_name,world?.title].find(value=>typeof value==='string'&&value.trim()&&value!=='undefined')||`Мир ${String(worldNumber).padStart(2,'0')}`;const description=[world?.description,world?.summary].find(value=>typeof value==='string'&&value.trim()&&value!=='undefined')||'';return {...world,id,name,description,world_number:worldNumber,config:world?.config&&typeof world.config==='object'?world.config:{}}}
+    async function refresh(){try{const response=await fetch('/api/worlds'),data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось загрузить миры');if(!Array.isArray(data.worlds))throw Error('Ответ каталога имеет неверный формат');worlds=data.worlds.map(normalizeWorld);const active=data.active||{};document.querySelector('#current').textContent=active.world_number?`${active.world_name||'Текущий мир'} · ${active.status==='running'?'арена идёт':active.status} · осталось ${Math.floor((active.seconds_remaining||0)/60)}:${String(Math.ceil(active.seconds_remaining||0)%60).padStart(2,'0')}`:'Арена сейчас перезапускается';const nextSignature=worlds.map(w=>`${w.id}:${w.name}`).join('|');if(nextSignature!==signature){signature=nextSignature;const previous=selectedWorld;select.replaceChildren(...worlds.map(w=>new Option(`${String(w.world_number).padStart(2,'0')} · ${w.name}`,w.world_number)));selectedWorld=worlds.some(w=>Number(w.world_number)===Number(previous))?Number(previous):Number(active.world_number||worlds[0]?.world_number);if(selectedWorld)select.value=String(selectedWorld);renderCards()}document.querySelector('#catalog-summary').textContent=worlds.length?`${worlds.length} игровых профилей`:'Пока нет доступных миров';if(!worlds.length)renderCards()}catch(error){document.querySelector('#current').textContent=`Ошибка: ${error.message}`;document.querySelector('#catalog-summary').textContent='Каталог временно недоступен';const host=document.querySelector('#world-cards');host.replaceChildren();const failure=document.createElement('p');failure.className='world-catalog-state';failure.textContent=`Не удалось загрузить каталог: ${error.message}`;host.append(failure)}}
+    select.addEventListener('change',()=>selectWorld(select.value));document.querySelector('#world-prev').addEventListener('click',()=>selectWorld(worlds[(worlds.findIndex(w=>Number(w.world_number)===selectedWorld)-1+worlds.length)%worlds.length]?.world_number));document.querySelector('#world-next').addEventListener('click',()=>selectWorld(worlds[(worlds.findIndex(w=>Number(w.world_number)===selectedWorld)+1)%worlds.length]?.world_number));refresh();setInterval(refresh,15000)
     </script>
     """
     return page("Миры · StadMagic", body)
@@ -838,56 +994,33 @@ def worlds_html() -> bytes:
 
 def leaderboard_html() -> bytes:
     body = """
-    <h1>Лидерборд</h1><section class=card><div class=grid><label>Раздел<select id=scope><option value=current>Текущая арена</option><option value=library>Библиотека арен</option><option value=world>Итоги одного мира</option><option value=all>Итоги всех миров</option></select></label><label id=world-label>Фильтр по миру<select id=world></select></label></div><p id=summary class=muted>Загружаю лидерборд…</p>
-    <div id=library class=card hidden><div class=grid><p id=library-summary class=muted></p><div><button id=prev-page>← Новее</button> <button id=next-page>Старее →</button></div></div><div id=run-list class=run-library></div></div>
-    <div style="overflow:auto"><table id=table></table></div><p id=totals-note class=muted hidden>В сводке по миру и всем мирам показатели суммируются по попыткам. «Золото» — сумма остатков на конец запусков, а не текущий баланс.</p></section>
+    <div class="leaderboard-page"><div class="leaderboard-heading"><div><span class=eyebrow>ТАБЛИЦА РЕЗУЛЬТАТОВ</span><h1>Рейтинг команд</h1><p>Текущая гонка, архив арен и суммарные результаты.</p></div><span class="phase-badge phase-running">LIVE · обновление 5 с</span></div>
+    <nav class="leaderboard-tabs" aria-label="Срез рейтинга"><button data-scope=all>За всё время</button><button data-scope=current>Текущая арена</button><button data-scope=world>По миру</button><button data-scope=history>История арен</button></nav>
+    <div id="leaderboard-results" class="leaderboard-results">
+      <div class="leaderboard-toolbar"><p id=summary class="leaderboard-summary" aria-live=polite>Загружаю результаты…</p><label id=world-label hidden>Мир<select id=world></select></label></div>
+      <section id=history-panel class="card history-browser" hidden><div class=history-browser-head><strong>Запуски арены</strong><div class=leaderboard-pagination><span id=history-summary class=muted></span><button id=prev-page class=secondary aria-label="Предыдущая страница">← Назад</button><button id=next-page class=secondary aria-label="Следующая страница">Вперёд →</button></div></div><div id=history-list class=history-browser-list></div></section>
+      <section id="leaderboard-table-card" class="card leaderboard-table-card"><div class=leaderboard-table-head><h2 id=table-heading>Суммарный рейтинг</h2><span id=updated class=muted></span></div><div class=leaderboard-table-wrap><table id=table class=leaderboard-table></table></div><p id=empty class=history-empty hidden>Пока нет результатов для этого среза.</p></section>
+      <p id=totals-note class=muted hidden>Суммарные показатели складываются по всем попыткам команды. «Золото» здесь означает сумму остатков в отчётах завершённых запусков.</p>
+    </div></div>
     <script>
-    const world=document.querySelector('#world'),scope=document.querySelector('#scope');
-    const runLimit=30;let worldCatalog=[],runOffset=0,selectedRunId=new URLSearchParams(location.search).get('run_id');
-    if(selectedRunId)scope.value='library';
-    function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-    async function loadWorlds(){
-      const d=await(await fetch('/api/worlds')).json();worldCatalog=d.worlds;
-      if(world.options.length===0){world.add(new Option('Все миры',''));for(const w of worldCatalog)world.add(new Option(`${w.name} · ${w.id}`,w.world_number));world.value=''}
-      return d;
-    }
-    async function loadRuns(active){
-      const query=new URLSearchParams({limit:String(runLimit),offset:String(runOffset)});if(world.value)query.set('world',world.value);
-      const d=await(await fetch('/api/runs?'+query.toString())).json();const runs=d.runs||[];
-      const start=d.total?d.offset+1:0;document.querySelector('#library-summary').textContent=`Арены ${start}–${d.offset+runs.length} из ${d.total||0}`;
-      document.querySelector('#prev-page').disabled=runOffset===0;document.querySelector('#next-page').disabled=runOffset+runLimit>=d.total;
-      const entries=[];
-      if(active.run_id&&!runs.some(item=>item.id===active.run_id))entries.push(`<a class="run-link active-run" href="/leaderboard?run_id=${encodeURIComponent(active.run_id)}">● Сейчас: ${esc(active.arena_name)} · ${esc(active.world_name)}</a>`);
-      for(const item of runs){const isActive=item.id===active.run_id;entries.push(`<a class="run-link ${isActive?'active-run':''}" href="/leaderboard?run_id=${encodeURIComponent(item.id)}">${isActive?'● СЕЙЧАС · ':''}${esc(item.arena_name)} · ${esc(item.world_name)} · ${new Date(item.started_at).toLocaleString()} · ${esc(item.status)}</a>`)}
-      document.querySelector('#run-list').innerHTML=entries.join('')||'<p class=muted>Запусков пока нет.</p>';
-      if(!selectedRunId)selectedRunId=active.run_id||(runs[0]?.id??null);
-      return selectedRunId;
-    }
-    function showRunTable(d,summary){
-      document.querySelector('#summary').textContent=summary;
-      document.querySelector('#table').innerHTML='<thead><tr><th>#</th><th>Команда</th><th>Золото</th><th>Собрано золота</th><th>Потеряно ковров от аварий</th><th>Пройденное расстояние</th></tr></thead><tbody>'+d.teams.map(t=>`<tr><td>${t.rank}</td><td class=team>${esc(t.name)}</td><td>${t.gold}</td><td>${t.gold_collected}</td><td>${t.carpets_lost}</td><td>${Math.round(t.distance_travelled)}</td></tr>`).join('')+'</tbody>';
-    }
-    async function refresh(){
-      const s=scope.value;document.querySelector('#world-label').style.display=['world','library'].includes(s)?'':'none';document.querySelector('#library').hidden=s!=='library';document.querySelector('#totals-note').hidden=!['world','all'].includes(s);
-      const worldState=await loadWorlds();let url,summary='';
-      if(s==='current'){
-        if(!worldState.active.run_id){document.querySelector('#summary').textContent='Арена запускается; лидерборд появится после первого отчёта.';document.querySelector('#table').innerHTML='';return}
-        url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(worldState.active.run_id);summary=`${worldState.active.arena_name} · ${worldState.active.world_name} · текущая арена`;
-      }else if(s==='world'){
-        if(!world.value)world.value=String(worldState.active.world_number??1);
-        url='/api/leaderboard?scope=world&world='+encodeURIComponent(world.value);
-      }
-      else if(s==='library'){
-        const runId=await loadRuns(worldState.active);if(!runId){document.querySelector('#summary').textContent='Запусков пока нет.';document.querySelector('#table').innerHTML='';return}
-        url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(runId);
-      }else url='/api/leaderboard?scope=all';
-      const r=await fetch(url);const d=await r.json();if(!r.ok){document.querySelector('#summary').textContent=d.error||'Ошибка';return}
-      if(s==='library'||s==='current'){if(s==='library')summary=`${d.run.arena_name} · ${d.run.world_name} · ${d.run.status}`;showRunTable(d,summary);return}
-      const selectedWorld=worldCatalog.find(w=>String(w.world_number)===world.value);
-      document.querySelector('#summary').textContent=s==='world'?`Суммарные результаты мира ${selectedWorld?.name} · ${selectedWorld?.id}`:'Суммарные результаты всех команд по всем мирам';
-      document.querySelector('#table').innerHTML='<thead><tr><th>Место</th><th>Команда</th><th>Попыток</th><th>Золото</th><th>Собрано золота</th><th>Потеряно ковров от аварий</th><th>Пройденное расстояние</th></tr></thead><tbody>'+d.teams.map(t=>`<tr><td>${t.rank}</td><td class=team>${esc(t.name)}</td><td>${t.attempts}</td><td>${t.total.gold}</td><td>${t.total.gold_collected}</td><td>${t.total.carpets_lost}</td><td>${Math.round(t.total.distance_travelled)}</td></tr>`).join('')+'</tbody>';
-    }
-    scope.onchange=refresh;world.onchange=()=>{runOffset=0;refresh()};document.querySelector('#prev-page').onclick=()=>{runOffset=Math.max(0,runOffset-runLimit);refresh()};document.querySelector('#next-page').onclick=()=>{runOffset+=runLimit;refresh()};refresh();setInterval(refresh,5000)
+    const world=document.querySelector('#world'),table=document.querySelector('#table'),results=document.querySelector('#leaderboard-results'),runLimit=12;
+    const params=new URLSearchParams(location.search);
+    let scope=params.get('run_id')?'history':['current','world','all','history'].includes(params.get('scope'))?params.get('scope'):'current';
+    let offset=0,worlds=[],requestId=0,selectedRunId=params.get('run_id');
+    function esc(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
+    const number=value=>Math.round(Number(value)||0).toLocaleString('ru-RU');
+    function setScope(value){scope=value;document.querySelectorAll('.leaderboard-tabs button').forEach(button=>{const active=button.dataset.scope===scope;button.classList.toggle('is-active',active);button.setAttribute('aria-pressed',String(active))});document.querySelector('#history-panel').hidden=scope!=='history';document.querySelector('#world-label').hidden=scope!=='world';document.querySelector('#totals-note').hidden=!['world','all'].includes(scope);document.querySelector('#table-heading').textContent=({current:'Лидеры текущей арены',history:'Результаты запуска',world:'Итоги выбранного мира',all:'Рейтинг за всё время'})[scope]}
+    function runStatus(status){return ({starting:['status-starting','◌','Запускается'],running:['status-running','●','Идёт'],complete:['status-complete','✓','Завершена'],failed:['status-failed','×','Сбой'],interrupted:['status-interrupted','Ⅱ','Прервана'],stopping:['status-stopping','◌','Завершается'],stopped:['status-interrupted','Ⅱ','Остановлена']})[status]||['status-unknown','•','Статус неизвестен']}
+    function runAge(value){const date=new Date(value);if(Number.isNaN(date.getTime()))return 'Время неизвестно';const seconds=Math.max(0,Math.floor((Date.now()-date.getTime())/1000));const [amount,unit]=seconds<60?[seconds,'second']:seconds<3600?[Math.floor(seconds/60),'minute']:seconds<86400?[Math.floor(seconds/3600),'hour']:[Math.floor(seconds/86400),'day'];const relative=new Intl.RelativeTimeFormat('ru-RU',{numeric:'auto'}).format(-amount,unit);return `${relative} · ${date.toLocaleString('ru-RU',{dateStyle:'medium',timeStyle:'short'})}`}
+    function renderRuns(runs,total,active){const host=document.querySelector('#history-list'),start=total?offset+1:0,pageCount=Math.max(1,Math.ceil(total/runLimit)),pageNumber=Math.floor(offset/runLimit)+1;document.querySelector('#history-summary').textContent=`${start}–${offset+(runs.length||0)} из ${total} · стр. ${pageNumber}/${pageCount}`;document.querySelector('#prev-page').disabled=offset===0;document.querySelector('#next-page').disabled=offset+runLimit>=total;const rows=[];if(active.run_id){const [statusClass,icon,label]=runStatus(active.status||'running');rows.push(`<a class="history-run is-current ${selectedRunId===active.run_id?'is-selected':''}" data-run-id="${esc(active.run_id)}" href="/leaderboard?scope=history&amp;run_id=${encodeURIComponent(active.run_id)}"><span class="history-run-icon ${statusClass}" aria-hidden="true">${icon}</span><strong>Текущая арена · ${esc(active.arena_name||'Арена')}</strong><small>${esc(active.world_name||'Текущий мир')} · ${runAge(active.started_at)}</small><b>${label}</b></a>`)}for(const run of runs){if(run.id===active.run_id)continue;const [statusClass,icon,label]=runStatus(run.status);rows.push(`<a class="history-run ${selectedRunId===run.id?'is-selected':''}" data-run-id="${esc(run.id)}" href="/leaderboard?scope=history&amp;run_id=${encodeURIComponent(run.id)}"><span class="history-run-icon ${statusClass}" aria-hidden="true">${icon}</span><strong>${esc(run.arena_name||'Арена')} · ${esc(run.world_name||'Мир')}</strong><small>${runAge(run.started_at)}</small><b>${label}</b></a>`)}host.innerHTML=rows.join('')||'<div class="history-empty">История появится после первого запуска.</div>'}
+    function renderTable(data,aggregated){const teams=data.teams||[],isEmpty=!teams.length;document.querySelector('#empty').hidden=!isEmpty;table.hidden=isEmpty;if(isEmpty){table.replaceChildren();return}const headers=aggregated?['#','Команда','Попыток','Золото','Собрано золота','Потеряно ковров от аварий','Пройденное расстояние']:['#','Команда','Золото','Собрано золота','Потеряно ковров от аварий','Пройденное расстояние'];table.innerHTML='<thead><tr>'+headers.map(header=>`<th>${header}</th>`).join('')+'</tr></thead><tbody>'+teams.map(team=>{const metrics=aggregated?(team.total||{}):team,values=[team.rank,esc(team.name),...(aggregated?[number(team.attempts)]:[]),number(metrics.gold),number(metrics.gold_collected),number(metrics.carpets_lost),number(metrics.distance_travelled)],goldColumns=aggregated?[3,4]:[2,3];return `<tr class="rank-${team.rank}">${values.map((value,index)=>`<td class="${index===1?'team':''} ${goldColumns.includes(index)?'gold-cell':''}">${value}${goldColumns.includes(index)?' <span class="gold-symbol" aria-label="золота">✦</span>':''}</td>`).join('')}</tr>`}).join('')+'</tbody>'}
+    async function refresh(){const request=++requestId;try{const stateResponse=await fetch('/api/worlds'),worldState=await stateResponse.json();if(!stateResponse.ok)throw Error(worldState.error||'Не удалось получить состояние арены');worlds=Array.isArray(worldState.worlds)?worldState.worlds:[];if(!world.options.length){world.replaceChildren(...worlds.map(item=>new Option(`${item.name||`Мир ${item.world_number}`} · мир ${item.world_number}`,item.world_number)));const preferred=String(worldState.active?.world_number||worlds[0]?.world_number||'');if([...world.options].some(option=>option.value===preferred))world.value=preferred}setScope(scope);let url,summary='',aggregated=false;if(scope==='current'){const active=worldState.active||{};if(!active.run_id){document.querySelector('#summary').textContent='Арена готовится к запуску.';renderTable({teams:[]},false);document.querySelector('#updated').textContent='';return}url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(active.run_id);summary=`${active.arena_name||'Арена'} · ${active.world_name||'текущий мир'} · сейчас`}else if(scope==='history'){const historyResponse=await fetch(`/api/runs?limit=${runLimit}&offset=${offset}`),historyData=await historyResponse.json();if(!historyResponse.ok)throw Error(historyData.error||'Не удалось загрузить историю');renderRuns(historyData.runs||[],historyData.total||0,worldState.active||{});const runId=selectedRunId||(worldState.active||{}).run_id||(historyData.runs||[])[0]?.id;if(!runId){document.querySelector('#summary').textContent='Запусков ещё не было.';renderTable({teams:[]},false);return}url='/api/leaderboard?scope=run&run_id='+encodeURIComponent(runId)}else if(scope==='world'){if(!world.value&&world.options.length)world.value=world.options[0].value;url='/api/leaderboard?scope=world&world='+encodeURIComponent(world.value);const profile=worlds.find(item=>String(item.world_number)===world.value);summary=`Суммарный рейтинг · ${profile?.name||'выбранный мир'}`;aggregated=true}else{url='/api/leaderboard?scope=all';summary='Суммарные результаты за всё время';aggregated=true}const response=await fetch(url),data=await response.json();if(request!==requestId)return;if(!response.ok)throw Error(data.error||'Не удалось загрузить рейтинг');if(scope==='history'&&data.run){const run=data.run;summary=`${run.arena_name||'Арена'} · ${run.world_name||'мир'} · ${runAge(run.started_at)} · ${runStatus(run.status)[2]}`}document.querySelector('#summary').textContent=summary;renderTable(data,aggregated);document.querySelector('#updated').textContent=`Обновлено ${new Date().toLocaleTimeString('ru-RU')}`}catch(error){if(request===requestId)document.querySelector('#summary').textContent=error.message}}
+    async function animateResults(action){if(matchMedia('(prefers-reduced-motion: reduce)').matches){await action();return}try{await results.animate([{opacity:1,filter:'blur(0)',transform:'translateY(0)'},{opacity:0,filter:'blur(4px)',transform:'translateY(7px)'}],{duration:130,easing:'ease-in'}).finished}catch(_){}await action();results.animate([{opacity:0,filter:'blur(4px)',transform:'translateY(-6px)'},{opacity:1,filter:'blur(0)',transform:'translateY(0)'}],{duration:300,easing:'cubic-bezier(.2,.75,.25,1)'})}
+    function updateUrl(){const query=new URLSearchParams({scope});if(scope==='history'&&selectedRunId)query.set('run_id',selectedRunId);window.history.replaceState({},'',`/leaderboard?${query}`)}
+    document.querySelectorAll('.leaderboard-tabs button').forEach(button=>button.addEventListener('click',()=>{const next=button.dataset.scope;if(next===scope&&!selectedRunId)return;selectedRunId=null;offset=0;updateUrl();animateResults(async()=>{setScope(next);await refresh()})}));
+    document.querySelector('#history-list').addEventListener('click',event=>{const link=event.target.closest('a.history-run');if(!link)return;event.preventDefault();const nextRunId=link.dataset.runId;if(!nextRunId)return;selectedRunId=nextRunId;scope='history';updateUrl();animateResults(async()=>{setScope('history');await refresh()}).then(()=>document.querySelector('#leaderboard-table-card').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'}))});
+    world.addEventListener('change',()=>{offset=0;updateUrl();animateResults(refresh)});document.querySelector('#prev-page').addEventListener('click',()=>{offset=Math.max(0,offset-runLimit);animateResults(refresh)});document.querySelector('#next-page').addEventListener('click',()=>{offset+=runLimit;animateResults(refresh)});
+    setScope(scope);refresh();setInterval(refresh,5000)
     </script>
     """
     return page("Лидерборд · StadMagic", body)
@@ -936,12 +1069,34 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_bytes(200, leaderboard_html(), "text/html; charset=utf-8")
             elif parsed.path == "/register":
                 self.send_bytes(200, register_html(), "text/html; charset=utf-8")
+            elif parsed.path == "/api/teams":
+                self.send_json(200, {"teams": state.registry.public_teams()})
+            elif parsed.path == "/api/teams/me":
+                token = str(self.headers.get("X-Auth-Token", "")).strip()
+                team_id = state.registry.resolve_token(token) if token else None
+                if team_id is None:
+                    self.send_json(401, {"error": "unknown or missing team token"})
+                else:
+                    self.send_json(200, {"name": state.registry.names().get(team_id, "Команда")})
             elif parsed.path == "/worlds":
                 self.send_bytes(200, worlds_html(), "text/html; charset=utf-8")
             elif parsed.path in {"/docs/api", "/docs/world"}:
                 file_name = "api.md" if parsed.path.endswith("api") else "world-rules.md"
                 source = (DOCS_DIR / file_name).read_text(encoding="utf-8")
-                self.send_bytes(200, page("Документация", f'<article class=card>{markdown_html(source)}</article>'), "text/html; charset=utf-8")
+                clean_source = re.sub(r"\A---\s*\n.*?\n---\s*\n", "", source, count=1, flags=re.S)
+                headings = re.findall(r"^##\s+(.+)$", clean_source, flags=re.M)
+                toc_items = []
+                for heading in headings:
+                    slug = re.sub(r"[^a-z0-9а-яё]+", "-", heading.lower()).strip("-")
+                    toc_items.append(f'<a href="#{esc(slug)}">{esc(heading)}</a>')
+                document = (
+                    '<div class="docs-toolbar"><a href="/docs">← Все материалы</a>'
+                    '<span>STADMAGIC · ДОКУМЕНТАЦИЯ</span></div>'
+                    '<div class="docs-layout"><nav class="docs-toc" aria-label="Содержание документа">'
+                    '<strong>Содержание</strong>' + "".join(toc_items) +
+                    '</nav><article class="docs-prose">' + markdown_html(source) + '</article></div>'
+                )
+                self.send_bytes(200, page("Документация", f'<section class="docs-article">{document}</section>'), "text/html; charset=utf-8")
             elif parsed.path in {"/api/docs/api", "/api/docs/world"}:
                 file_name = "api.md" if parsed.path.endswith("api") else "world-rules.md"
                 self.send_bytes(200, (DOCS_DIR / file_name).read_bytes(), "text/markdown; charset=utf-8")
@@ -949,10 +1104,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_bytes(200, (ROOT / "docs" / "mechanics.md").read_bytes(), "text/markdown; charset=utf-8")
             elif parsed.path == "/api/worlds":
                 active = state.current_arena()
+                active["active_players"] = 0
+                if active.get("status") == "running" and active.get("run_id"):
+                    try:
+                        active["active_players"] = len(state.store.leaderboard("run", state.registry.names(), run_id=active["run_id"])["teams"])
+                    except KeyError:
+                        pass
                 worlds = [
                     {**world_config,
-                     "active": active.get("world_number") == world_config["world_number"]}
-                    for world_config in state.world_configs
+                     "world_number": world_config.get("world_number") or index + 1,
+                     "active": active.get("world_number") == (world_config.get("world_number") or index + 1)}
+                    for index, world_config in enumerate(state.world_configs)
                 ]
                 self.send_json(200, {"active": active, "worlds": worlds})
             elif parsed.path == "/api/votes":
@@ -1018,10 +1180,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 else:
                     result = self.state.registry.create(name)
             else:
-                token = str(body.get("token", ""))
+                token = str(self.headers.get("X-Auth-Token", "")).strip()
                 team_id = self.state.registry.resolve_token(token)
                 if team_id is None:
-                    self.send_json(403, {"error": "token is not registered"})
+                    self.send_json(401, {"error": "unknown or missing team token"})
                     return
                 world_id = str(body.get("world_id", ""))
                 counts = self.state.set_vote(team_id, world_id)

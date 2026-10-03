@@ -6,7 +6,7 @@ author: "Codex"
 created_at: "2026-10-03"
 updated_at: "2026-10-03"
 status: "approved"
-version: 1.0
+version: 1.1
 tags: [websocket, realtime, visualization, manual-control, performance]
 related_domain_records: [DR-014, DR-013, DR-001]
 related_test_cases: [TC-WEB-VISUALIZER-REALTIME-01]
@@ -74,7 +74,7 @@ sequenceDiagram
 {"type":"snapshot","tick":42,"state":{"mapSize":{"x":10000,"y":10000},"transports":[],"enemies":[],"bounties":[],"anomalies":[]}}
 ```
 
-`state` сохраняет Desert DTO без изменений. Observer может только получать snapshots. Ограничение размера входного сообщения — 16 KiB; некорректные и неавторизованные команды отклоняются без закрытия всей сессии, если протокол позволяет продолжить безопасно.
+`state` сохраняет Desert DTO без изменений. Дополнительно WS snapshot содержит `enemyTeams` — массив, выровненный по индексам `state.enemies`; элемент содержит `carpetId`, opaque `teamId` и публичное `teamName`. Это поле только веб-канала; игровой REST-контракт не меняется, токены/секреты в метаданные не попадают. Observer может только получать snapshots. Ограничение размера входного сообщения — 16 KiB; некорректные и неавторизованные команды отклоняются без закрытия всей сессии, если протокол позволяет продолжить безопасно.
 
 ### Lease heartbeat
 
@@ -119,3 +119,4 @@ sequenceDiagram
 | Версия | Дата | Автор | Изменение |
 |---|---|---|---|
 | 1.0 | 2026-10-03 | Codex | Спецификация и реализация realtime-канала веб-визуализатора. |
+| 1.1 | 2026-10-03 | Codex | Добавлены публичные метаданные владельцев enemy carpets для командного различения на веб-карте. |
