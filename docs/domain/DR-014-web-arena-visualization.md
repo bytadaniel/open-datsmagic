@@ -97,7 +97,7 @@ related_domains: [DR-006, DR-010, DR-013]
 
 | Метод | Путь | Назначение | Параметры |
 |---|---|---|---|
-| POST | `/api/visualizer/move` | С токеном Hub проксирует команду своей команды; без токена — только read-only observer запрос | `{token?, transports, manualCarpetId?, leaseId?}` |
+| POST | `/api/visualizer/move` | С токеном Hub проксирует команду своей команды; без токена — только read-only observer запрос | `X-Auth-Token` header; body `{transports, manualCarpetId?, leaseId?, releaseLeaseId?}` |
 
 Успешный ответ — неизменённый Desert snapshot. Игровой контракт `POST /play/magcarp/player/move` остаётся единственным игровым endpoint.
 
@@ -113,6 +113,7 @@ related_domains: [DR-006, DR-010, DR-013]
 - [ ] Размер монеты соответствует мировому радиусу при зуме без растрового размытия.
 - [ ] Fullscreen включается/выключается на поддерживаемых браузерах; карта и контролы адаптируются для телефона.
 - [ ] Токен не появляется в URL, исходной странице или логах.
+- [ ] Игровой токен браузерного клиента передаётся только в `X-Auth-Token`, никогда в JSON body.
 
 ## 9. Вопросы и допущения
 

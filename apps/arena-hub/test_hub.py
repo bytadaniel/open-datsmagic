@@ -89,12 +89,16 @@ class HubTests(unittest.TestCase):
         script = script_path.read_text(encoding="utf-8")
         self.assertIn("function drawCoins(ctx, snapshot)", script)
         self.assertIn("worldRadius * factor", script)
+        self.assertIn("headers['X-Auth-Token'] = state.token", script)
+        self.assertNotIn("body.token", script)
+        self.assertNotIn("navigator.sendBeacon", script)
         self.assertNotIn("offscreen", script)
 
     def test_visualizer_proxy_authenticates_and_uses_short_manual_lease(self):
         class HandlerStub:
-            def __init__(self, registry):
+            def __init__(self, registry, headers=None):
                 self.state = SimpleNamespace(registry=registry)
+                self.headers = headers or {}
                 self.responses = []
 
             def send_bytes(self, status, payload, content_type):
@@ -116,9 +120,9 @@ class HubTests(unittest.TestCase):
             token = "registered-visualizer-token"
             team = registry.register(token, "Visual Team")
             lease_path = Path(directory) / "manual.json"
-            handler = HandlerStub(registry)
+            handler = HandlerStub(registry, {"X-Auth-Token": token})
             command = {"id": f"{team['team_id']}_0", "acceleration": {"x": 12, "y": -3}}
-            body = {"token": token, "transports": [command], "manualCarpetId": command["id"], "leaseId": "browser-lease"}
+            body = {"transports": [command], "manualCarpetId": command["id"], "leaseId": "browser-lease"}
             with patch.dict(os.environ, {"DATS_MANUAL_CONTROL_FILE": str(lease_path)}), \
                  patch("urllib.request.urlopen", return_value=UpstreamResponse()) as upstream:
                 RequestHandler.handle_visualizer_move(handler, body)
@@ -130,15 +134,21 @@ class HubTests(unittest.TestCase):
                 self.assertEqual(lease["carpetId"], command["id"])
                 self.assertEqual(lease["leaseId"], "browser-lease")
                 self.assertLessEqual(lease["expiresAtUnixMs"], __import__("time").time() * 1000 + 1000)
-                competing = HandlerStub(registry)
+                competing = HandlerStub(registry, {"X-Auth-Token": token})
                 RequestHandler.handle_visualizer_move(competing, {**body, "leaseId": "other-browser"})
                 self.assertEqual(competing.responses[0][0], 409)
                 self.assertEqual(lease_path.read_text(encoding="utf-8"), json.dumps(lease))
 
-            unauthorized = HandlerStub(registry)
+            unauthorized = HandlerStub(registry, {"X-Auth-Token": "unknown"})
             with patch("urllib.request.urlopen") as upstream:
-                RequestHandler.handle_visualizer_move(unauthorized, {"token": "unknown", "transports": []})
+                RequestHandler.handle_visualizer_move(unauthorized, {"transports": []})
                 self.assertEqual(unauthorized.responses[0][0], 401)
+                upstream.assert_not_called()
+
+            legacy_body_token = HandlerStub(registry)
+            with patch("urllib.request.urlopen") as upstream:
+                with self.assertRaisesRegex(ValueError, "X-Auth-Token header"):
+                    RequestHandler.handle_visualizer_move(legacy_body_token, {"token": token, "transports": []})
                 upstream.assert_not_called()
 
             observer = HandlerStub(registry)

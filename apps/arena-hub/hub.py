@@ -1019,10 +1019,12 @@ class RequestHandler(BaseHTTPRequestHandler):
     def handle_visualizer_move(self, body: Any) -> None:
         if not isinstance(body, dict):
             raise ValueError("request body must be a JSON object")
+        if "token" in body:
+            raise ValueError("token must be supplied in the X-Auth-Token header")
         commands = body.get("transports", [])
         if not isinstance(commands, list) or len(commands) > 64:
             raise ValueError("transports must be an array with at most 64 commands")
-        supplied_token = str(body.get("token", "")).strip()
+        supplied_token = str(self.headers.get("X-Auth-Token", "")).strip()
         observer = not supplied_token
         if observer:
             if commands or any(key in body for key in ("manualCarpetId", "leaseId", "releaseLeaseId")):

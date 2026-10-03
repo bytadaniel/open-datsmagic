@@ -41,7 +41,7 @@ related_test_cases: [TC-HUB-HTTP-01]
 | `GET /api/leaderboard?scope=all` | Суммарные метрики по всей истории всех миров |
 | `POST /api/teams` | `{ "token": "...", "name": "..." }`; upsert приватного реестра, ответ не возвращает token |
 | `GET /api/docs/api`, `/api/docs/world` | Документы API и правил мира в Markdown |
-| `POST /api/visualizer/move` | `{ "token"?: "...", "transports": [...] }`; с token Hub проверяет регистрацию, без token разрешает только read-only просмотр через внутренний observer credential. Для ручного управления принимает `manualCarpetId` и `leaseId`; игровой API не расширяется. |
+| `POST /api/visualizer/move` | Токен команды передаётся только в `X-Auth-Token`; тело содержит `transports` и служебные поля ручного управления. Без заголовка разрешён только read-only просмотр через внутренний observer credential. |
 | `GET /health` | Состояние control plane и число активных арен |
 
 ### Агрегаты
@@ -51,7 +51,7 @@ related_test_cases: [TC-HUB-HTTP-01]
 ## 4. Безопасность и ошибки
 
 - Registry JSON и SQLite расположены под `apps/arena-hub/data/`; весь каталог игнорируется git.
-- Token допускается только в POST body и приватном файле, никогда не отдается GET-ответами, HTML или публичным leaderboard.
+- Игровой/визуализаторный auth token передаётся только заголовком `X-Auth-Token`, не body, URL или GET; токен регистрации/голосования принимается соответствующими POST-формами Hub.
 - Голос принимается только для зарегистрированного токена; хранилище содержит командный fingerprint, а публичный endpoint возвращает только агрегированные количества.
 - Hub arena processes проверяют токен по registry file с кешем, обновляемым при изменении файла.
 - Неизвестные scope/run/world возвращают `400`/`404`; некорректный token/name — `400`.
@@ -76,3 +76,4 @@ related_test_cases: [TC-HUB-HTTP-01]
 | 1.3 | 2026-10-03 | Codex | Добавлена веб-страница наблюдения `/arena` и безопасный Hub-прокси игрового endpoint. |
 | 1.4 | 2026-10-03 | Codex | Визуализатор поддерживает публичный read-only просмотр и ручной fullscreen. |
 | 1.5 | 2026-10-03 | Codex | Публичное имя проекта изменено на StadMagic; главная страница раскрывает источник вдохновения и неофициальный статус. |
+| 1.6 | 2026-10-03 | Codex | Токен визуализатора перенесён из body Hub-прокси в `X-Auth-Token`. |

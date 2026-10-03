@@ -300,7 +300,6 @@
     state.polling = true;
     try {
       const body = { transports: [] };
-      if (state.token) body.token = state.token;
       if (state.manual && state.selectedId) {
         const selected = byId(state.current, state.selectedId);
         if (selected?.own && alive(selected)) {
@@ -312,7 +311,9 @@
         } else disableManual(true);
       }
       if (state.releaseLeaseId) body.releaseLeaseId = state.releaseLeaseId;
-      const response = await fetch('/api/visualizer/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const headers = { 'Content-Type': 'application/json' };
+      if (state.token) headers['X-Auth-Token'] = state.token;
+      const response = await fetch('/api/visualizer/move', { method: 'POST', headers, body: JSON.stringify(body) });
       const snapshot = await response.json();
       if (!response.ok) throw Object.assign(new Error(snapshot.error || `Ошибка API ${response.status}`), { status: response.status });
       updateSnapshot(snapshot);
@@ -356,8 +357,9 @@
     disableManual(false);
     state.releaseLeaseId = '';
     if (previousToken && previousLease) {
-      fetch('/api/visualizer/move', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: previousToken, transports: [], releaseLeaseId: previousLease }) }).catch(() => {});
+      fetch('/api/visualizer/move', { method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': previousToken },
+        body: JSON.stringify({ transports: [], releaseLeaseId: previousLease }) }).catch(() => {});
     }
     state.token = token;
     state.observer = observer;
@@ -525,8 +527,9 @@
   requestAnimationFrame(draw);
   window.addEventListener('pagehide', () => {
     if (state.token && state.leaseId) {
-      const payload = JSON.stringify({ token: state.token, transports: [], releaseLeaseId: state.leaseId });
-      navigator.sendBeacon('/api/visualizer/move', new Blob([payload], { type: 'application/json' }));
+      fetch('/api/visualizer/move', { method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': state.token },
+        body: JSON.stringify({ transports: [], releaseLeaseId: state.leaseId }) }).catch(() => {});
     }
   });
 })();
