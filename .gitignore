@@ -2,10 +2,11 @@
 target/
 **/*.rs.bk
 *.pdb
-lib/bot-variants/player_2/manual_control*.json
-lib/bot-variants/player_2/manual_control*.json.*.tmp
-lib/bot-variants/player_2/token.txt
-lib/bot-variants/player_1/node_modules/
+lib/arena-bots/rust_bytadaniel/manual_control*.json
+lib/arena-bots/rust_bytadaniel/manual_control*.json.*.tmp
+lib/arena-bots/rust_bytadaniel/token.txt
+lib/arena-bots/player_1/node_modules/
+lib/arena-bots/nodejs_bytadaniel/node_modules/
 
 # Python virtual environment and cache
 __pycache__/
@@ -28,8 +29,8 @@ sdist/
 var/
 wheels/
 *.egg-info/
-apps/arena-hub/data/
-apps/arena-runtime/data/
+modules/arena-hub/data/
+modules/arena-runtime/data/
 arena_hub/data/
 current_world.json
 leaderboard.json

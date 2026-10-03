@@ -1,7 +1,7 @@
 ---
 id: FE-025
 title: "Compose-развёртывание Hub и управляемой Rust-арены"
-module: "apps/arena-hub, apps/arena-runtime, Docker Compose"
+module: "modules/arena-hub, modules/arena-runtime, Docker Compose"
 author: "Codex"
 created_at: "2026-10-03"
 updated_at: "2026-10-03"

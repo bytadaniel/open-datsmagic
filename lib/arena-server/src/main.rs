@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| project_root.join("assets/worlds.json"));
     let world_info_path = std::env::var_os("DATS_WORLD_STATUS_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| project_root.join("apps/arena-hub/data/current_world.json"));
+        .unwrap_or_else(|| project_root.join("modules/arena-hub/data/current_world.json"));
     let worlds = load_worlds(&worlds_path).map_err(std::io::Error::other)?;
     let world_index = select_world(&worlds, std::env::var("DATS_WORLD_ID").ok().as_deref())
         .map_err(std::io::Error::other)?;
@@ -235,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let leaderboard_path = std::env::var_os("DATS_LEADERBOARD_PATH")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| repository_root().join("apps/arena-hub/data/leaderboard.json"));
+        .unwrap_or_else(|| repository_root().join("modules/arena-hub/data/leaderboard.json"));
     let leaderboard_handle = server::leaderboard::spawn(engine.clone(), leaderboard_path)
         .await
         .map_err(|error| std::io::Error::other(error.to_string()))?;

@@ -1,0 +1,9 @@
+[submodule "lib/arena-bots/java_sas4eka"]
+	path = lib/arena-bots/java_sas4eka
+	url = https://github.com/sas4eka/DatsMagic.git
+[submodule "lib/arena-bots/nodejs_bytadaniel"]
+	path = lib/arena-bots/nodejs_bytadaniel
+	url = https://github.com/bytadaniel/datsmagic.git
+[submodule "lib/arena-bots/rust_bytadaniel"]
+	path = lib/arena-bots/rust_bytadaniel
+	url = https://github.com/bytadaniel/open-datsmagic-bot.git

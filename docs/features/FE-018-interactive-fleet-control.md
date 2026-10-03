@@ -1,7 +1,7 @@
 ---
 id: FE-018
 title: "Аренда ручного управления для совместимости с player_2"
-module: "lib/bot-variants/player_2, lib/arena-visualizer"
+module: "lib/arena-bots/rust_bytadaniel, lib/arena-visualizer"
 author: "Codex"
 created_at: "2026-10-01"
 updated_at: "2026-10-02"
@@ -19,7 +19,7 @@ related_test_cases: [TC-VIS-CONTROL-01]
 
 ## 2. Архитектурное решение
 
-- Клиент, временно управляющий игроком, записывает `lib/bot-variants/player_2/manual_control_<token-hash>.json`; оба процесса поддерживают одинаковый override пути через `DATS_MANUAL_CONTROL_FILE`.
+- Клиент, временно управляющий игроком, записывает `lib/arena-bots/rust_bytadaniel/manual_control_<token-hash>.json`; оба процесса поддерживают одинаковый override пути через `DATS_MANUAL_CONTROL_FILE`.
 - JSON аренды содержит `carpetId`, `expiresAtUnixMs` и диагностический `leaseId`; TTL составляет 1000 ms, клиент обновляет lease не реже одного раза за 200 ms. `player_2` использует первые два поля, а клиент проверяет `leaseId`, чтобы при закрытии не удалить аренду другого локального окна.
 - Имя файла использует FNV-1a 64-bit хеш токена в виде 16 lowercase hex символов, не раскрывая сам токен.
 - `player_2` с активной арендой приостанавливает свои запросы и очищает отложенный пакет команд. После освобождения lease бот продолжает с нового Desert snapshot.

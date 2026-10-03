@@ -133,7 +133,7 @@ related_domains: [DR-006, DR-010, DR-013, DR-001]
 
 ## 10. Зависимости
 
-- **Внутренние модули:** `apps/arena-hub`, игровой Desert API, `lib/bot-variants/player_2` lease.
+- **Внутренние модули:** `modules/arena-hub`, игровой Desert API, lease-файл в `lib/arena-bots/rust_bytadaniel`.
 - **Инфраструктура:** активный arena endpoint и общий путь краткосрочной аренды управления.
 
 ## История изменений

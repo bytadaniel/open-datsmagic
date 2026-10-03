@@ -160,7 +160,7 @@ fn registered_team_name(token: &str) -> Option<String> {
                 .ancestors()
                 .nth(2)
                 .unwrap_or_else(|| std::path::Path::new("."))
-                .join("apps/arena-hub/data/registry.json")
+                .join("modules/arena-hub/data/registry.json")
         });
     let cache = TOKEN_REGISTRY_CACHE.get_or_init(|| Mutex::new(None));
     let Ok(mut cache) = cache.lock() else {

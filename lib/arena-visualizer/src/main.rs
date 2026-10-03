@@ -13,6 +13,9 @@ use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Vec2 as EVec2,
 };
 use serde::{Deserialize, Serialize};
+use tungstenite::{
+    Message, WebSocket, client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream,
+};
 
 const HISTORY_SECONDS: u64 = 50;
 const ADAPTIVE_RISK_STEP_MIN: f64 = 50.0;
@@ -770,6 +773,57 @@ enum Command {
     Manual(Option<(String, V)>),
     Stop,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RealtimeTicket {
+    ticket: String,
+    websocket_url: String,
+}
+
+fn connect_realtime(
+    ticket: RealtimeTicket,
+) -> Result<WebSocket<MaybeTlsStream<std::net::TcpStream>>, String> {
+    let mut request = ticket
+        .websocket_url
+        .into_client_request()
+        .map_err(|error| format!("invalid visualizer WebSocket URL: {error}"))?;
+    let protocols = format!("stadmagic.v1, stadmagic-ticket.{}", ticket.ticket);
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_str(&protocols)
+            .map_err(|error| format!("invalid visualizer ticket: {error}"))?,
+    );
+    tungstenite::connect(request)
+        .map(|(socket, _)| socket)
+        .map_err(|error| format!("visualizer WebSocket connect failed: {error}"))
+}
+
+fn parse_realtime_snapshot(text: &str) -> Result<Option<(u64, Desert)>, String> {
+    let message: serde_json::Value = serde_json::from_str(text)
+        .map_err(|error| format!("invalid visualizer WebSocket JSON: {error}"))?;
+    match message.get("type").and_then(serde_json::Value::as_str) {
+        Some("snapshot") => {
+            let tick = message
+                .get("tick")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let state = message
+                .get("state")
+                .cloned()
+                .ok_or_else(|| "visualizer snapshot has no state".to_string())?;
+            let desert = serde_json::from_value(state)
+                .map_err(|error| format!("invalid Desert snapshot: {error}"))?;
+            Ok(Some((tick, desert)))
+        }
+        Some("error") => Err(message
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("visualizer WebSocket error")
+            .to_string()),
+        _ => Ok(None),
+    }
+}
+
 struct Network {
     events: Receiver<WorkerEvent>,
     commands: Sender<Command>,
@@ -777,11 +831,12 @@ struct Network {
     leaderboard_stop: Sender<()>,
 }
 impl Network {
-    fn start(url: String, hub_url: String, token: String, poll: Duration) -> Self {
+    fn start(hub_url: String, token: String) -> Self {
         let (event_tx, events) = mpsc::sync_channel(1);
         let (commands, command_rx) = mpsc::channel();
         let (leaderboard_tx, leaderboard_events) = mpsc::sync_channel(1);
         let (leaderboard_stop, leaderboard_stop_rx) = mpsc::channel();
+        let ticket_hub_url = hub_url.clone();
         thread::Builder::new()
             .name("desert-api".into())
             .spawn(move || {
@@ -796,7 +851,7 @@ impl Network {
                     }
                 };
                 let mut manual: Option<(String, V)> = None;
-                let mut backoff = poll;
+                let mut backoff = Duration::from_millis(200);
                 loop {
                     loop {
                         match command_rx.try_recv() {
@@ -805,33 +860,103 @@ impl Network {
                             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                         }
                     }
-                    let transports = manual
-                        .as_ref()
-                        .map(|(id, a)| {
-                            vec![serde_json::json!({"id":id,"acceleration":{"x":a.x,"y":a.y}})]
-                        })
-                        .unwrap_or_default();
-                    let result = client
-                        .post(&url)
+                    let ticket_endpoint = format!(
+                        "{}/api/visualizer/ticket",
+                        ticket_hub_url.trim_end_matches('/')
+                    );
+                    let ticket_result = client
+                        .post(&ticket_endpoint)
                         .header("X-Auth-Token", &token)
-                        .json(&serde_json::json!({"transports":transports}))
+                        .json(&serde_json::json!({}))
                         .send()
-                        .and_then(|r| r.error_for_status())
-                        .and_then(|r| r.json::<Desert>());
-                    match result {
-                        Ok(snapshot) => {
-                            let _ = event_tx.try_send(WorkerEvent::Snapshot(
-                                Box::new(snapshot),
-                                Instant::now(),
-                            ));
-                            backoff = poll;
-                        }
-                        Err(e) => {
-                            let _ = event_tx.try_send(WorkerEvent::Error(e.to_string()));
+                        .and_then(|response| response.error_for_status())
+                        .and_then(|response| response.json::<RealtimeTicket>());
+                    let mut socket = match ticket_result {
+                        Ok(ticket) => match connect_realtime(ticket) {
+                            Ok(socket) => {
+                                backoff = Duration::from_millis(200);
+                                socket
+                            }
+                            Err(error) => {
+                                let _ = event_tx.try_send(WorkerEvent::Error(error));
+                                thread::sleep(backoff);
+                                backoff = backoff.saturating_mul(2).min(Duration::from_secs(5));
+                                continue;
+                            }
+                        },
+                        Err(error) => {
+                            let _ = event_tx.try_send(WorkerEvent::Error(format!(
+                                "visualizer ticket request failed: {error}"
+                            )));
+                            thread::sleep(backoff);
                             backoff = backoff.saturating_mul(2).min(Duration::from_secs(5));
+                            continue;
+                        }
+                    };
+
+                    loop {
+                        loop {
+                            match command_rx.try_recv() {
+                                Ok(Command::Manual(m)) => manual = m,
+                                Ok(Command::Stop) => return,
+                                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                            }
+                        }
+                        match socket.read() {
+                            Ok(Message::Text(text)) => {
+                                match parse_realtime_snapshot(text.as_str()) {
+                                    Ok(Some((_, snapshot))) => {
+                                        let _ = event_tx.try_send(WorkerEvent::Snapshot(
+                                            Box::new(snapshot),
+                                            Instant::now(),
+                                        ));
+                                        if let Some((id, acceleration)) = &manual {
+                                            let command = serde_json::json!({
+                                                "type": "commands",
+                                                "transports": [{
+                                                    "id": id,
+                                                    "acceleration": {
+                                                        "x": acceleration.x,
+                                                        "y": acceleration.y
+                                                    }
+                                                }]
+                                            });
+                                            if let Err(error) = socket
+                                                .send(Message::Text(command.to_string().into()))
+                                            {
+                                                let _ =
+                                                    event_tx.try_send(WorkerEvent::Error(format!(
+                                                        "visualizer command send failed: {error}"
+                                                    )));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        let _ = event_tx.try_send(WorkerEvent::Error(error));
+                                    }
+                                }
+                            }
+                            Ok(Message::Ping(payload)) => {
+                                if socket.send(Message::Pong(payload)).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(Message::Close(_)) => break,
+                            Ok(Message::Binary(_)) => {}
+                            Ok(Message::Frame(_)) => {}
+                            Ok(Message::Pong(_)) => {}
+                            Err(error) => {
+                                let _ = event_tx.try_send(WorkerEvent::Error(format!(
+                                    "visualizer WebSocket disconnected: {error}"
+                                )));
+                                break;
+                            }
                         }
                     }
                     thread::sleep(backoff);
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(5));
                 }
             })
             .expect("network thread");
@@ -1349,7 +1474,7 @@ impl App {
         }
     }
 
-    fn new(url: String, hub_url: String, token: String, poll: Duration) -> Self {
+    fn new(hub_url: String, token: String, poll: Duration) -> Self {
         let hash = token_hash(&token);
         let own_team_id = format!("{hash:016x}");
         let hub_url = normalize_hub_url(hub_url);
@@ -1362,13 +1487,13 @@ impl App {
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 repository_root().join(format!(
-                    "lib/bot-variants/player_2/manual_control_{hash:016x}.json"
+                    "lib/arena-bots/rust_bytadaniel/manual_control_{hash:016x}.json"
                 ))
             });
         let lease_id = format!("visualizer2-{}-{}", std::process::id(), unix_ms());
         let world_status_path = env::var_os("DATS_WORLD_STATUS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|| repository_root().join("apps/arena-hub/data/current_world.json"));
+            .unwrap_or_else(|| repository_root().join("modules/arena-hub/data/current_world.json"));
         let team_name_path = env::var_os("DATS_TEAM_NAME_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -1379,7 +1504,7 @@ impl App {
             .trim()
             .to_owned();
         Self {
-            network: Network::start(normalize_url(url), hub_url.clone(), token, poll),
+            network: Network::start(hub_url.clone(), token),
             hub_url,
             world: None,
             previous: None,
@@ -2322,16 +2447,6 @@ impl App {
         }
     }
 }
-fn normalize_url(mut url: String) -> String {
-    const PATH: &str = "/play/magcarp/player/move";
-    if !url.ends_with(PATH) {
-        while url.ends_with('/') {
-            url.pop();
-        }
-        url.push_str(PATH);
-    }
-    url
-}
 fn default_hub_url(arena_url: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(arena_url) else {
         return "http://127.0.0.1:8090".to_string();
@@ -2859,16 +2974,21 @@ fn unix_ms() -> u128 {
 }
 
 fn args() -> Result<(String, String, String, Duration), String> {
-    let mut url = "http://127.0.0.1:8080/play/magcarp/player/move".to_string();
-    let mut hub_url = None;
-    let mut token = None;
+    let mut url = env::var("STADMAGIC_ARENA_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080/play/magcarp/player/move".to_string());
+    let mut hub_url = env::var("STADMAGIC_HUB_URL").ok();
+    let token = env::var("DATS_PLAYER_TOKEN").ok();
     let mut poll = Duration::from_millis(200);
     let mut it = env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--url" => url = it.next().ok_or("--url needs a value")?,
             "--hub-url" => hub_url = Some(it.next().ok_or("--hub-url needs a value")?),
-            "--token" => token = Some(it.next().ok_or("--token needs a value")?),
+            "--token" => {
+                return Err(
+                    "set the token with DATS_PLAYER_TOKEN, not a command-line argument".into(),
+                );
+            }
             "--poll-ms" => {
                 poll = Duration::from_millis(
                     it.next()
@@ -2879,7 +2999,7 @@ fn args() -> Result<(String, String, String, Duration), String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "Usage: lib/arena-visualizer --url URL --token TOKEN [--hub-url URL] [--poll-ms 200]"
+                    "Usage: DATS_PLAYER_TOKEN=... lib/arena-visualizer --url URL [--hub-url URL] [--poll-ms 200]"
                         .into(),
                 );
             }
@@ -2888,7 +3008,7 @@ fn args() -> Result<(String, String, String, Duration), String> {
     }
     let token = token
         .filter(|s| !s.trim().is_empty())
-        .ok_or("--token is required and cannot be empty")?;
+        .ok_or("DATS_PLAYER_TOKEN is required and cannot be empty")?;
     if poll < Duration::from_millis(50) {
         return Err("--poll-ms must be at least 50".into());
     }
@@ -2898,16 +3018,16 @@ fn args() -> Result<(String, String, String, Duration), String> {
 fn main() -> eframe::Result<()> {
     if env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: lib/arena-visualizer --url URL --token TOKEN [--hub-url URL] [--poll-ms 200]"
+            "Usage: DATS_PLAYER_TOKEN=... lib/arena-visualizer --url URL [--hub-url URL] [--poll-ms 200]"
         );
         return Ok(());
     }
-    let (url, hub_url, token, poll) = args().unwrap_or_else(|e| {
+    let (_url, hub_url, token, poll) = args().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2)
     });
     let window_title = format!("StadMagic · token: {token}");
-    let app = App::new(url, hub_url, token, poll);
+    let app = App::new(hub_url, token, poll);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
@@ -2926,18 +3046,6 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base_url_targets_canonical_desert_endpoint() {
-        assert_eq!(
-            normalize_url("http://localhost:8080/".into()),
-            "http://localhost:8080/play/magcarp/player/move"
-        );
-        assert_eq!(
-            normalize_url("http://localhost:8080/play/magcarp/player/move".into()),
-            "http://localhost:8080/play/magcarp/player/move"
-        );
-    }
 
     #[test]
     fn default_hub_url_uses_arena_host_and_control_plane_port() {
@@ -2961,6 +3069,34 @@ mod tests {
         assert_eq!(board.teams[0].team_id, "0123456789abcdef");
         assert_eq!(board.teams[0].top.gold_collected, 20);
         assert_eq!(board.teams[0].total.carpets_lost, 3);
+    }
+
+    #[test]
+    fn parses_realtime_snapshot_envelope_without_losing_desert_state() {
+        let (tick, snapshot) = parse_realtime_snapshot(
+            r#"{"type":"snapshot","tick":42,"state":{"mapSize":{"x":1000,"y":800},"transports":[],"bounties":[{"x":10,"y":20,"radius":3,"points":7}]}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(tick, 42);
+        assert_eq!(
+            snapshot.map_size,
+            V {
+                x: 1000.0,
+                y: 800.0
+            }
+        );
+        assert_eq!(snapshot.bounties.len(), 1);
+        assert_eq!(snapshot.bounties[0].points, 7);
+    }
+
+    #[test]
+    fn parses_realtime_error_envelope_as_error() {
+        assert_eq!(
+            parse_realtime_snapshot(r#"{"type":"error","error":"observer is read-only"}"#)
+                .unwrap_err(),
+            "observer is read-only"
+        );
     }
 
     #[test]

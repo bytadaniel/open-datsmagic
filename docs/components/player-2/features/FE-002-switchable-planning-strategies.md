@@ -1,7 +1,7 @@
 ---
 id: FE-002
 title: "Переключаемые стратегии планировщика player_2"
-module: "lib/bot-variants/player_2 strategy configuration and planner"
+module: "lib/arena-bots/rust_bytadaniel strategy configuration and planner"
 author: "Codex"
 created_at: "2026-10-02"
 updated_at: "2026-10-02"

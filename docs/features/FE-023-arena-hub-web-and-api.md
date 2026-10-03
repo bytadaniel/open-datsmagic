@@ -1,7 +1,7 @@
 ---
 id: FE-023
 title: "Веб-страницы, регистрация команд и лидерборд control plane"
-module: "apps/arena-hub::http, apps/arena-hub::leaderboard"
+module: "modules/arena-hub::http, modules/arena-hub::leaderboard"
 author: "Codex"
 created_at: "2026-10-02"
 updated_at: "2026-10-03"
@@ -50,7 +50,7 @@ related_test_cases: [TC-HUB-HTTP-01]
 
 ## 4. Безопасность и ошибки
 
-- Registry JSON и SQLite расположены под `apps/arena-hub/data/`; весь каталог игнорируется git.
+- Registry JSON и SQLite расположены под `modules/arena-hub/data/`; весь каталог игнорируется git.
 - Игровой/визуализаторный auth token передаётся только заголовком `X-Auth-Token`, не body, URL или GET; токен регистрации/голосования принимается соответствующими POST-формами Hub.
 - Голос принимается только для зарегистрированного токена; хранилище содержит командный fingerprint, а публичный endpoint возвращает только агрегированные количества.
 - Hub arena processes проверяют токен по registry file с кешем, обновляемым при изменении файла.

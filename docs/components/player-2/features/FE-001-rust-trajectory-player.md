@@ -1,7 +1,7 @@
 ---
 id: FE-001
 title: "Отдельный Rust-игрок с прогнозированием траекторий"
-module: "lib/bot-variants/player_2"
+module: "lib/arena-bots/rust_bytadaniel"
 author: "Codex"
 created_at: "2026-10-02"
 updated_at: "2026-10-02"
@@ -20,8 +20,8 @@ related_test_cases: [TC-PLAYER-PHYSICS-01, TC-PLAYER-PLANNER-01, TC-PLAYER-API-0
 
 ## 2. Архитектурное решение
 
-- `lib/bot-variants/player_1/` — копия текущего `datsmagic` и токен `player_1`.
-- `lib/bot-variants/player_2/` — самостоятельный Cargo package, отдельный от workspace сервера; только минимальные зависимости JSON и отдельный исполняемый файл.
+- `lib/arena-bots/player_1/` — архивная копия прежнего клиента, если восстановлена в рабочем checkout.
+- `lib/arena-bots/rust_bytadaniel/` — самостоятельный Cargo package и Git submodule, отдельный от workspace сервера; только минимальные зависимости JSON и отдельный исполняемый файл.
 - Token resolution: non-empty `DATS_PLAYER_TOKEN` is used directly; otherwise read the path in `DATS_PLAYER_TOKEN_FILE`, defaulting to `token.txt`. This prevents a shell-provided token from silently targeting a different fleet.
 - Стратегию задаёт `DATS_PLAYER_STRATEGY`: `stable-profit` (основная, по умолчанию) либо `agile-top1`. Неизвестное имя стратегии считается ошибкой конфигурации.
 - Movement задаётся независимо через `DATS_MOVEMENT_STRATEGY=none|survival`; при `survival` каждый тик оценивается риск текущего aim-курса и при угрозе выполняется safety scan. Escape включается, если до прогнозируемой гибели осталось не более 3 секунд или безопасных вариантов осталось не более 10% скана. Если выход не найден в горизонте, `DATS_DOOM_POLICY=collect|fastest` выбирает максимизацию bounty до смерти или кратчайшую смерть. Переменные по умолчанию: `none` и `collect`.
@@ -113,8 +113,8 @@ related_test_cases: [TC-PLAYER-PHYSICS-01, TC-PLAYER-PLANNER-01, TC-PLAYER-API-0
 ## 8. План реализации
 
 - [x] Создать локальные DR-001 и FE-001 перед реализацией.
-- [x] Скопировать TypeScript игрока в `lib/bot-variants/player_1`, назначить токен `player_1`.
-- [x] Создать независимый минимальный Rust package в `lib/bot-variants/player_2`.
+- [x] Скопировать TypeScript игрока в `lib/arena-bots/player_1`, назначить токен `player_1`.
+- [x] Создать независимый минимальный Rust package в `lib/arena-bots/rust_bytadaniel`.
 - [x] Реализовать Desert HTTP-клиент, разбор состояния, физический предиктор и тестируемые функции оценки.
 - [x] Реализовать сканирование секторов, режимы опасности/удержания курса и batch-команду.
 - [x] Реализовать RTT-компенсацию и tick-rate retry/backoff.
@@ -151,7 +151,7 @@ related_test_cases: [TC-PLAYER-PHYSICS-01, TC-PLAYER-PLANNER-01, TC-PLAYER-API-0
 |---|---|---|---|
 | 1.0 | 2026-10-02 | Codex | Спецификация второго Rust-клиента. |
 | 1.1 | 2026-10-02 | Codex | Реализован изолированный Rust-клиент; release-сборка проходит. Радиус сбора закреплен равным 10 по текущему серверному движку. |
-| 1.2 | 2026-10-02 | Codex | Уточнены три обязательные цели и ненулевые команды; спецификация перемещена в `lib/bot-variants/player_2/docs`. |
+| 1.2 | 2026-10-02 | Codex | Уточнены три обязательные цели и ненулевые команды; спецификация перемещена в общую документацию player-2. |
 | 1.3 | 2026-10-02 | Codex | Документы перенумерованы локально от 1; описан полный скан 10°, уточнение 2° и аварийный скан 5°. |
 | 1.4 | 2026-10-02 | Codex | Добавлены метрики score/time, закрепление достижимой bounty и штраф микрокоррекции. |
 | 1.5 | 2026-10-02 | Codex | Уплотнён угловой скан, добавлен near-miss aiming bonus и явный приоритет максимальной скорости при полном ускорении. |

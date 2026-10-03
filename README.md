@@ -19,17 +19,16 @@ StadMagic — неофициальная самостоятельная игра
 ## Структура
 
 ```text
-apps/arena-hub/                  Веб-сайт, регистрация, API Hub, лидерборд и расписание арен (Python)
-apps/arena-runtime/              Внутренний lifecycle API: запускает/останавливает Rust-симуляцию
+modules/arena-hub/                  Веб-сайт, регистрация, API Hub, лидерборд и расписание арен (Python)
+modules/arena-runtime/              Внутренний lifecycle API: запускает/останавливает Rust-симуляцию
 lib/arena-server/                Игровая физика, мир и единственный API арены (Rust)
 lib/arena-visualizer/             Нативный визуализатор с ручным управлением (Rust/egui)
-lib/bot-variants/player_1/        Прежняя клиентская реализация (TypeScript)
-lib/bot-variants/player_2/        Автономный бот со стратегиями (Rust)
+lib/arena-bots/                   Независимые клиенты игроков (Git submodules)
 assets/worlds.json                Профили миров; монтируется в контейнеры только для чтения
 docs/                             Спецификации, правила мира, API и архитектурные решения
 scripts/                          Локальные команды запуска
-apps/arena-hub/Dockerfile         Образ веб-Hub
-apps/arena-runtime/Dockerfile     Runtime-контейнер с управлением arena-процессом
+modules/arena-hub/Dockerfile         Образ веб-Hub
+modules/arena-runtime/Dockerfile     Runtime-контейнер с управлением arena-процессом
 lib/arena-server/Dockerfile       Самостоятельный образ игрового Rust API
 docker-compose.yaml               Запуск Hub и runtime; arena-процесс стартует по команде Hub
 ```
@@ -92,8 +91,8 @@ docker compose down
 # Hub: сайт на :8090 и одна управляемая арена на :8080
 ./scripts/run_hub.sh
 
-# Нативная визуализация (токен обязателен)
-./scripts/run_visualizer.sh --url http://127.0.0.1:8080 --token player_2
+# Нативная визуализация (токен обязателен через окружение)
+DATS_PLAYER_TOKEN='your-token' STADMAGIC_ARENA_URL=http://127.0.0.1:8080/play/magcarp/player/move STADMAGIC_HUB_URL=http://127.0.0.1:8090 ./scripts/run_visualizer.sh
 ```
 
 Открой Hub на <http://127.0.0.1:8090>. Там доступны регистрация команды, каталог миров, голосование, документация и лидерборд. Для локальной отладки выбор мира можно закрепить через `HUB_FIXED_WORLD_ID`.
@@ -102,21 +101,25 @@ docker compose down
 
 Варианты игроков хранятся отдельно от симуляции:
 
+Переменные для launcher-скриптов собраны в корневом `.env.example`. Скопируй его в `.env`, укажи выданный веб-приложением `DATS_PLAYER_TOKEN`, затем загрузи переменные в текущую shell-сессию командой `set -a; source .env; set +a`. `.env` игнорируется Git; токен не коммить.
+
 ```bash
-# Игрок 2: установите/передайте токен, затем выберите стратегии переменными окружения
-cd lib/bot-variants/player_2
-DATS_PLAYER_TOKEN='your-token' DATS_PLAYER_STRATEGY=agile-top1 DATS_MOVEMENT_STRATEGY=survival cargo run --release
+# Игрок 2: токен и стратегии задаются переменными окружения
+DATS_PLAYER_TOKEN='your-token' DATS_SERVER_URL=http://127.0.0.1:8080 DATS_PLAYER_STRATEGY=agile-top1 DATS_MOVEMENT_STRATEGY=survival ./scripts/run_rust_bytadaniel.sh
 ```
 
-Не коммитьте токены. Player 1 содержит прежнюю клиентскую реализацию и её собственный `token.txt`; Player 2 — отдельный Rust-пакет и отдельная логика поведения.
+Не коммитьте токены. Player 2 — отдельный Rust-пакет и отдельная логика поведения в `lib/arena-bots/rust_bytadaniel`.
 
 ## Визуализатор
 
-Выбор ковра и ручное управление разделены. Визуализатор получает игровое состояние с арены и лидерборд/миры через Hub:
+Выбор ковра и ручное управление разделены. Визуализатор получает игровое состояние с арены и лидерборд/миры через Hub. Для публичного StadMagic URL уже заданы скриптом; токен передай только через окружение:
 
 ```bash
-./scripts/run_visualizer.sh --url http://127.0.0.1:8080 --hub-url http://127.0.0.1:8090 --token player_2
+export DATS_PLAYER_TOKEN='your-token'
+./scripts/run_visualizer.sh
 ```
+
+Для локальной арены переопредели `STADMAGIC_ARENA_URL=http://127.0.0.1:8080/play/magcarp/player/move` и `STADMAGIC_HUB_URL=http://127.0.0.1:8090`. Скрипт не помещает токен в аргументы процесса.
 
 Справка по клавишам и настройкам: [`docs/components/arena-visualizer/README.md`](docs/components/arena-visualizer/README.md).
 
@@ -128,13 +131,13 @@ cargo test --manifest-path lib/arena-visualizer/Cargo.toml
 cargo fmt --manifest-path lib/arena-server/Cargo.toml --check
 cargo fmt --manifest-path lib/arena-visualizer/Cargo.toml --check
 cargo clippy --manifest-path lib/arena-server/Cargo.toml --all-targets -- -D warnings
-python3 -m unittest discover -s apps/arena-hub -v
+python3 -m unittest discover -s modules/arena-hub -v
 ```
 
 Player 2 проверяется независимо:
 
 ```bash
-cargo test --manifest-path lib/bot-variants/player_2/Cargo.toml
+cargo test --manifest-path lib/arena-bots/rust_bytadaniel/Cargo.toml
 ```
 
 ## Документация

@@ -1,7 +1,7 @@
 ---
 id: FE-020
 title: "Каталог профилей мира в JSON"
-module: "server::config, apps/arena-hub"
+module: "server::config, modules/arena-hub"
 author: "Codex"
 created_at: "2026-10-02"
 updated_at: "2026-10-03"

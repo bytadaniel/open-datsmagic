@@ -1,7 +1,7 @@
 ---
 id: FE-026
 title: "Realtime-канал веб-визуализатора"
-module: "apps/arena-hub и lib/arena-server::visualizer-stream"
+module: "modules/arena-hub и lib/arena-server::visualizer-stream"
 author: "Codex"
 created_at: "2026-10-03"
 updated_at: "2026-10-03"

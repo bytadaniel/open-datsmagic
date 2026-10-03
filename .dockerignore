@@ -5,8 +5,9 @@
 **/node_modules
 **/__pycache__
 **/*.py[cod]
-apps/arena-hub/data
-lib/bot-variants/player_1/node_modules
-lib/bot-variants/player_2/token.txt
-lib/bot-variants/player_2/manual_control*.json
+modules/arena-hub/data
+lib/arena-bots/player_1/node_modules
+lib/arena-bots/nodejs_bytadaniel/node_modules
+lib/arena-bots/rust_bytadaniel/token.txt
+lib/arena-bots/rust_bytadaniel/manual_control*.json
 *.log

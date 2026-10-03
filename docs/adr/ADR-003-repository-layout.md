@@ -16,10 +16,11 @@ tags: [architecture, repository-structure, monorepo]
 
 ## Решение
 
-- `apps/arena-hub/` — Python control plane, HTML/CSS/JS страницы, API, supervisor, приватные runtime-данные.
+- `modules/arena-hub/` — Python control plane, HTML/CSS/JS страницы, API, supervisor, приватные runtime-данные.
+- `modules/arena-runtime/` — внутренний lifecycle API процесса Rust-арены.
 - `lib/arena-server/` — Rust simulation API и исполняемый процесс арены. Графические зависимости не входят в пакет.
 - `lib/arena-visualizer/` — автономное Rust/egui приложение наблюдения и ручного управления.
-- `lib/bot-variants/player_1/`, `player_2/` — независимые клиентские реализации; их поведенческая логика не становится частью сервера.
+- `lib/arena-bots/<player>/` — независимые реализации игроков, подключаемые как отдельные репозитории там, где это нужно; их поведенческая логика не становится частью сервера.
 - `docs/` — единственный каталог проектных документов: ADR, domain, features и `components/<component>/` для локальных спецификаций компонентов.
 - `assets/worlds.json` хранит каталог профилей миров; `scripts/` содержит единые точки запуска.
 - Каждый Rust-продукт — независимый Cargo package/workspace со своим `Cargo.toml` и `Cargo.lock`; корневого Cargo-манифеста нет. Это не связывает зависимости приложений и явно разделяет сборку.
@@ -41,3 +42,5 @@ tags: [architecture, repository-structure, monorepo]
 | Дата | Изменение |
 |---|---|
 | 2026-10-03 | Первичная компонентная структура; удаление устаревшего Python UI; единый каталог документов. |
+| 2026-10-03 | Приложения Hub и arena runtime сгруппированы в `modules/`. |
+| 2026-10-03 | Клиентские реализации перемещены из `lib/bot-variants/` в `lib/arena-bots/`. |

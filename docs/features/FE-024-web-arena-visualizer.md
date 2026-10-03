@@ -1,7 +1,7 @@
 ---
 id: FE-024
 title: "Лёгкий адаптивный веб-визуализатор арены"
-module: "apps/arena-hub::visualizer"
+module: "modules/arena-hub::visualizer"
 author: "Codex"
 created_at: "2026-10-03"
 updated_at: "2026-10-03"
@@ -20,9 +20,9 @@ related_test_cases: [TC-WEB-VISUALIZER-01]
 
 ## 2. Архитектурное решение
 
-- `apps/arena-hub/static/arena-visualizer.js` отвечает за Canvas, камеру, выбор сущностей, realtime snapshots и ввод; сетевой цикл не блокирует `requestAnimationFrame`.
-- `apps/arena-hub/static/arena-visualizer.css` задаёт адаптивную компоновку и мобильный виртуальный стик.
-- `apps/arena-hub/hub.py` отдаёт страницу/ассеты и `POST /api/visualizer/move`. Hub проверяет токен игрока либо использует закрытый observer credential, вызывает текущий arena host через `POST /play/magcarp/player/move` и передаёт снимок.
+- `modules/arena-hub/static/arena-visualizer.js` отвечает за Canvas, камеру, выбор сущностей, realtime snapshots и ввод; сетевой цикл не блокирует `requestAnimationFrame`.
+- `modules/arena-hub/static/arena-visualizer.css` задаёт адаптивную компоновку и мобильный виртуальный стик.
+- `modules/arena-hub/hub.py` отдаёт страницу/ассеты и `POST /api/visualizer/move`. Hub проверяет токен игрока либо использует закрытый observer credential, вызывает текущий arena host через `POST /play/magcarp/player/move` и передаёт снимок.
 - Снимки и ручные команды веб-визуализатора идут по отдельному WebSocket каналу. Он выдаёт latest snapshot на тик (200 мс), коалесцирует устаревшие версии и не меняет REST API ботов. Lease ручного управления обновляется отдельным малым heartbeat.
 - Для обзора: колесо/щипок — zoom, drag/стрелки — pan; кнопка слежения центрирует выбранную цель. Клик по ковру выбирает его, выбор не включает управление.
 - Для управления: мышь задаёт экранный вектор от центра выбранного ковра к указателю, как в Rust-визуализаторе; его длина ограничивается `maxAccel` в CSS-пикселях и потому не зависит от zoom. На touch виртуальный стик задаёт направление/длину, экранный Y инвертируется в координаты мира.
@@ -31,7 +31,7 @@ related_test_cases: [TC-WEB-VISUALIZER-01]
 - Монеты рисуются непосредственно из мировых координат: экранный радиус равен API-радиусу, умноженному на текущий масштаб. Их пути батчатся в Canvas, растровая карта мира не масштабируется.
 - Синие аномалии — отталкивающие, красные — притягивающие. Ядро залито непрозрачным цветом, внешняя область влияния полупрозрачная.
 - Fullscreen включается кнопкой и синхронизируется с нативной командой выхода браузера; CSS-компоновка использует пространство экрана на ПК и телефоне.
-- Для player_2 используется совместимый FNV-1a hash токена и файл `lib/bot-variants/player_2/manual_control_<hash>.json`. Hub атомарно записывает lease с `carpetId`, случайным `leaseId` и сроком `now + 1000 ms`; обновляет каждые 200 мс. На штатное выключение снимает только lease с собственным `leaseId`. При падении клиента TTL возвращает управление боту.
+- Для player_2 используется совместимый FNV-1a hash токена и файл `lib/arena-bots/rust_bytadaniel/manual_control_<hash>.json`. Hub атомарно записывает lease с `carpetId`, случайным `leaseId` и сроком `now + 1000 ms`; обновляет каждые 200 мс. На штатное выключение снимает только lease с собственным `leaseId`. При падении клиента TTL возвращает управление боту.
 
 ## 3. API-контракт
 
