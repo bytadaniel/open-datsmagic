@@ -14,6 +14,7 @@
   const stickBase = touchStick.querySelector('.stick-base');
   const shell = document.querySelector('.visualizer-shell');
   const fullscreenButton = document.querySelector('#fullscreen-toggle');
+  const orientationButton = document.querySelector('#orientation-toggle');
   const entryTitle = document.querySelector('#arena-entry-title');
   const entryName = document.querySelector('#arena-entry-name');
   const entryDescription = document.querySelector('#arena-entry-description');
@@ -358,6 +359,7 @@
         const values = [team.rank, team.name, team.gold, team.gold_collected, team.carpets_lost, Math.round(team.distance_travelled).toLocaleString('ru-RU')];
         values.forEach((value, index) => {
           const cell = document.createElement('td');
+          cell.dataset.label = headers[index];
           if (index === 0) cell.className = 'rank-cell';
           if (index === 1) cell.className = 'team';
           if (index === 2 || index === 3) {
@@ -1065,7 +1067,17 @@
       || shell.classList.contains('fullscreen-fallback');
   }
   function syncFullscreenButton() {
-    fullscreenButton.textContent = fullscreenActive() ? '⛶ Выйти' : '⛶';
+    const active = fullscreenActive();
+    fullscreenButton.textContent = active ? '⛶ Выйти' : '⛶';
+    orientationButton.hidden = !active || !matchMedia('(max-width:760px), (pointer:coarse)').matches;
+    if (!orientationButton.hidden) syncOrientationButton();
+    else if (!active) { try { screen.orientation?.unlock?.(); } catch (_) {} }
+  }
+  function syncOrientationButton() {
+    const landscape = matchMedia('(orientation:landscape)').matches;
+    orientationButton.textContent = landscape ? '↕' : '↻';
+    orientationButton.setAttribute('aria-label', landscape ? 'Переключить в портретный режим' : 'Переключить в альбомный режим');
+    orientationButton.title = landscape ? 'Переключить экран в портретную ориентацию' : 'Переключить экран в альбомную ориентацию';
   }
   fullscreenButton.addEventListener('click', async () => {
     try {
@@ -1080,6 +1092,22 @@
     syncFullscreenButton();
     setTimeout(resize, 100);
   });
+  orientationButton.addEventListener('click', async () => {
+    const target = matchMedia('(orientation:landscape)').matches ? 'portrait' : 'landscape';
+    try {
+      if (screen.orientation?.lock) await screen.orientation.lock(target);
+      else throw new Error('orientation lock unavailable');
+      message.textContent = target === 'landscape' ? 'Включён альбомный режим.' : 'Включён портретный режим.';
+      message.className = 'viz-message';
+    } catch (_) {
+      orientationButton.textContent = target === 'landscape' ? '↻' : '↕';
+      orientationButton.setAttribute('aria-label', 'Автоповорот недоступен. Поверни устройство вручную или продолжай в текущем режиме.');
+      orientationButton.title = 'Автоповорот недоступен в этом браузере. Поверни устройство вручную или продолжай в текущем режиме.';
+    }
+    setTimeout(resize, 150);
+  });
+  screen.orientation?.addEventListener?.('change', () => { syncOrientationButton(); resize(); });
+  matchMedia('(orientation:landscape)').addEventListener?.('change', () => { syncOrientationButton(); resize(); });
   document.addEventListener('fullscreenchange', () => { syncFullscreenButton(); setTimeout(resize, 100); });
   document.addEventListener('webkitfullscreenchange', () => { syncFullscreenButton(); setTimeout(resize, 100); });
   window.addEventListener('keydown', event => {

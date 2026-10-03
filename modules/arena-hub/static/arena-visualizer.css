@@ -447,3 +447,216 @@ details.disclosure-closing>.disclosure-content{grid-template-rows:0fr!important;
 .visualizer-shell{width:100%;max-width:none}
 .visualizer-stage,.visualizer-stage:hover{width:100%;box-sizing:border-box;padding:0}
 .visualizer-layout{margin-bottom:28px}
+
+/* Mobile-first layout pass for the arena page. */
+@media(max-width:760px){
+  .visualizer-shell{margin:12px 0 36px}
+  .arena-page-heading{align-items:center;justify-content:space-between;margin:0 0 14px;padding:0 2px}
+  .arena-page-heading h1{margin:0;font-size:clamp(1.75rem,7vw,2.2rem)}
+  .arena-connection-status{gap:7px;font-size:.72rem}
+  .arena-context{gap:22px;padding:clamp(18px,4vw,26px);border-radius:18px}
+  .arena-context-head{grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:14px}
+  .arena-context-copy h2{margin:8px 0;font-size:clamp(1.55rem,6vw,2.2rem);line-height:1.08;overflow-wrap:anywhere}
+  .arena-context-copy p{font-size:.9rem;line-height:1.55}
+  .context-time{min-width:112px;max-width:138px;padding:10px 11px;text-align:left}
+  .context-time>span{font-size:.56rem;letter-spacing:.07em;white-space:normal}
+  .context-time strong{font-size:1.12rem;white-space:nowrap}
+  .arena-context-details{gap:22px}
+  .arena-context-facts{grid-template-columns:repeat(3,minmax(0,1fr));gap:0}
+  .arena-context-facts .context-fact{min-height:100px;padding:8px 10px;gap:8px;border-right:1px solid #ffffff18;border-bottom:0}
+  .arena-context-facts .context-fact+.context-fact{padding-left:10px}
+  .context-fact-label{gap:6px;font-size:.62rem;letter-spacing:.04em;line-height:1.25}
+  .context-fact-label svg,.gold-symbol{width:16px;height:16px;font-size:16px}
+  .arena-context-facts .context-fact b,.arena-context-facts .context-fact:first-child b{font-size:clamp(1.05rem,4vw,1.45rem);letter-spacing:-.04em;white-space:normal;overflow-wrap:anywhere}
+  .context-fact-note{font-size:.65rem}
+  .arena-world-profile{gap:16px}
+  .arena-profile-label{font-size:.65rem;letter-spacing:.1em;line-height:1.45}
+  .arena-world-traits{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 16px}
+  .arena-threat-item{grid-template-rows:auto 108px auto;gap:9px}
+  .arena-threat-gauge{width:108px;height:108px}
+  .arena-threat-heading{min-height:46px}
+  .arena-threat-heading>small{font-size:.66rem;line-height:1.35}
+  .arena-threat-category{font-size:.72rem}
+  .arena-threat-range{font-size:.68rem}
+  .arena-threat-scale{font-size:.58rem}
+  .arena-threat-note{font-size:.7rem;line-height:1.45}
+  .arena-world-rules{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px;padding-top:16px}
+  .arena-world-rules>span,.arena-world-rules>span:nth-child(5){min-height:56px;padding:10px 8px;border-left:1px solid #ffffff15}
+  .arena-world-rules>span:nth-child(odd){padding-left:0;border-left:0}
+  .arena-world-rules small{font-size:.66rem;line-height:1.4}
+  .arena-world-rules b{font-size:.82rem;line-height:1.35}
+  .arena-world-rules b.world-boolean{font-size:1rem}
+  .arena-voting{padding-inline:14px}
+  .arena-voting summary{gap:10px;min-height:62px}
+  .arena-voting summary b{font-size:.85rem;white-space:normal}
+  .arena-voting summary small{font-size:.72rem;line-height:1.4}
+  .arena-voting summary em{font-size:.68rem;white-space:nowrap}
+  .arena-voting .arena-vote-layout{gap:16px;padding-bottom:16px}
+  .arena-voting .arena-vote-layout form{gap:12px;padding:14px}
+  .arena-vote-row{grid-template-columns:28px minmax(0,1fr) minmax(50px,.7fr) 32px;gap:8px;min-height:42px;font-size:.76rem}
+  .visualizer-top.card{margin:0 0 14px;padding:0;border:0;border-radius:0;background:none;box-shadow:none}
+  .arena-mode-card{grid-template-columns:36px minmax(0,1fr);gap:12px 14px;padding:16px;border-radius:15px}
+  .arena-mode-copy h1{font-size:1.14rem;line-height:1.25;overflow-wrap:anywhere}
+  .arena-mode-copy h2{font-size:.9rem;line-height:1.35;overflow-wrap:anywhere}
+  .arena-mode-copy p,.arena-mode-copy>small{font-size:.78rem;line-height:1.5}
+  .mode-side-actions{gap:12px}
+  .mode-side-actions .mode-switch.secondary,.mode-side-actions .mode-countdown{min-height:52px}
+  .mode-side-actions .mode-countdown>span{font-size:.58rem;letter-spacing:.06em;white-space:normal}
+  .mode-side-actions .mode-countdown strong{font-size:1.08rem}
+  .viz-gold-summary{gap:14px;margin:12px 0 16px;padding:14px}
+  .viz-gold-own{padding:2px 8px 12px}
+  .viz-gold-leaders{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .viz-gold-leader{grid-template-columns:34px minmax(0,1fr);gap:6px 9px;min-height:70px;padding:8px}
+  .viz-gold-rank{width:32px;height:32px;font-size:1rem}
+  .viz-gold-team{font-size:.72rem;line-height:1.3;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+  .viz-gold-leader .viz-gold-value{font-size:.8rem}
+  .viz-gold-deaths{gap:3px;font-size:.61rem}
+  .viz-death-icon{width:12px;height:12px}
+  .visualizer-layout{margin-bottom:28px}
+  .visualizer-stage,.visualizer-stage:hover{padding:0}
+  .viz-toolbar{grid-template-columns:minmax(0,1fr);gap:10px;padding:0 0 11px}
+  .select-label{box-sizing:border-box;width:100%;max-width:none;min-height:46px;margin:0;padding:5px 10px}
+  .select-label select{min-height:40px;font-size:16px}
+  .viz-toolbar-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .viz-toolbar-actions>button,.camera-tools button{box-sizing:border-box;width:100%;min-width:0;min-height:46px;padding:9px 8px;font-size:.78rem}
+  .camera-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;padding:2px}
+  .camera-tools button{padding-inline:4px;font-size:.82rem}
+  .viz-toolbar-actions #fullscreen-toggle{min-width:0;padding-inline:4px}
+  .canvas-wrap{height:58vh;height:58svh;min-height:300px;max-height:640px;border-radius:12px}
+  .touch-stick{right:max(16px,env(safe-area-inset-right));bottom:max(18px,env(safe-area-inset-bottom));width:clamp(104px,30vw,124px);height:clamp(104px,30vw,124px)}
+  .touch-stick span{top:auto;bottom:calc(100% + 7px);font-size:.72rem}
+  .viz-fps{top:9px;left:9px}
+  .viz-footer{justify-content:flex-start;gap:8px;padding:9px 2px 0;font-size:.76rem}
+  .viz-help-disclosure,.visualizer-shell .world-settings{margin-bottom:12px;padding-inline:14px}
+  .viz-help-disclosure>summary,.visualizer-shell .world-settings>summary{min-height:58px;font-size:.88rem}
+  .viz-help-disclosure>summary small{font-size:.76rem}
+  .viz-help-disclosure .viz-help{gap:20px;padding:19px 0 16px}
+  .viz-help-disclosure .viz-help-grid{gap:0}
+  .viz-help-disclosure .viz-help-item,.viz-help-disclosure .viz-help-item:first-child{grid-template-columns:36px minmax(0,1fr);gap:12px;padding:13px 0}
+  .viz-help-disclosure .viz-help-item b{font-size:.9rem}
+  .viz-help-disclosure .viz-help-item small{font-size:.82rem;line-height:1.55}
+  .viz-help-legend{gap:13px}
+  .viz-help-legend .vector-legend,.viz-help-legend .map-guide-items{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+  .viz-help-legend .vector-legend span,.viz-help-legend .map-guide-items span{font-size:.76rem;line-height:1.45}
+  .world-settings .disclosure-inner{padding-bottom:12px}
+  .world-settings dl{grid-template-columns:1fr;gap:0}
+  .world-settings dl div{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px 2px}
+  .world-settings dt,.world-settings dd{font-size:.82rem;line-height:1.4}
+  .arena-ranking{margin:14px 0 20px;padding:16px 14px}
+  .arena-ranking-heading{align-items:flex-start;gap:8px}
+  .arena-ranking-heading h2{font-size:1.25rem}
+  .arena-ranking-heading .muted,.arena-ranking>p{font-size:.76rem;line-height:1.45}
+  .arena-ranking-table{max-height:none;overflow:visible;margin:10px 0 0}
+  .arena-ranking-table-inner{display:block;width:100%;min-width:0;table-layout:auto;border-collapse:separate;border-spacing:0}
+  .arena-ranking-table-inner thead{display:none}
+  .arena-ranking-table-inner tbody{display:grid;gap:10px}
+  .arena-ranking-table-inner tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px;padding:8px 10px;border:1px solid #ffffff12;border-radius:12px;background:#0d1a28}
+  .arena-ranking-table-inner tbody tr td{display:grid;grid-template-rows:auto auto;justify-items:start;align-content:center;gap:4px;min-width:0;width:auto;padding:8px 4px;border:0;border-radius:0;text-align:left!important;white-space:normal;font-size:.8rem;line-height:1.35;overflow-wrap:anywhere}
+  .arena-ranking-table-inner tbody tr td::before{content:attr(data-label);color:#8fa5b7;font-size:.62rem;font-weight:750;line-height:1.3;letter-spacing:.04em;text-transform:uppercase}
+  .arena-ranking-table-inner tbody tr td:first-child{color:#dce7ef}
+  .arena-ranking-table-inner tbody tr td:nth-child(2){color:#e9f0f5;font-weight:800}
+  .arena-ranking-table-inner tbody tr td.gold-cell{white-space:normal;text-align:left!important}
+  .arena-ranking-table-inner tbody tr td .ranking-gold-symbol{font-size:.82em}
+}
+@media(max-width:520px){
+  .arena-page-heading h1{font-size:1.8rem}
+  .arena-context{gap:19px;padding:17px;border-radius:16px}
+  .arena-context-head{grid-template-columns:minmax(0,1fr);gap:12px}
+  .context-time{grid-template-columns:minmax(0,1fr) auto;align-items:center;width:100%;max-width:none;min-width:0;text-align:left}
+  .context-time>span{font-size:.57rem}
+  .arena-context-facts{grid-template-columns:repeat(2,minmax(0,1fr));gap:0}
+  .arena-context-facts .context-fact{min-height:84px;padding:8px 8px 8px 0;border-right:1px solid #ffffff18}
+  .arena-context-facts .context-fact:first-child{grid-column:1/-1;min-height:76px;padding:0 0 12px;border-right:0;border-bottom:1px solid #ffffff18}
+  .arena-context-facts .context-fact+.context-fact{padding-left:12px}
+  .arena-context-facts .context-fact:first-child+.context-fact{padding-left:0}
+  .context-fact-label{font-size:.63rem}
+  .arena-context-facts .context-fact b,.arena-context-facts .context-fact:first-child b{font-size:1.28rem}
+  .arena-world-traits{gap:22px 10px}
+  .arena-threat-gauge{width:clamp(94px,27vw,108px);height:clamp(94px,27vw,108px)}
+  .arena-threat-item{grid-template-rows:auto clamp(94px,27vw,108px) auto}
+  .arena-threat-heading>small{font-size:.64rem}
+  .arena-threat-note{font-size:.66rem}
+  .arena-world-rules{gap:0 9px}
+  .arena-world-rules>span,.arena-world-rules>span:nth-child(5){min-height:58px;padding:9px 6px}
+  .arena-world-rules small{font-size:.64rem}
+  .arena-world-rules b{font-size:.78rem}
+  .mode-side-actions{gap:10px}
+  .mode-side-actions .mode-switch.secondary,.mode-side-actions .mode-countdown{min-height:50px;padding-inline:9px}
+  .mode-side-actions .mode-countdown::before{left:-6px}
+  .mode-side-actions .mode-countdown>span{font-size:.54rem}
+  .viz-gold-leaders{grid-template-columns:1fr}
+  .viz-gold-leader{grid-template-columns:42px minmax(0,1fr);min-height:66px;padding:8px 10px}
+  .viz-gold-rank{width:38px;height:38px;font-size:1.1rem}
+  .viz-gold-team{font-size:.78rem}
+  .viz-gold-leader .viz-gold-value{font-size:.88rem}
+  .viz-gold-deaths{font-size:.66rem}
+  .viz-toolbar-actions{gap:7px}
+  .viz-toolbar-actions>button,.camera-tools button{min-height:48px}
+  .canvas-wrap{height:56vh;height:56svh;min-height:280px;max-height:560px}
+  .viz-help-legend .vector-legend,.viz-help-legend .map-guide-items{grid-template-columns:1fr;gap:10px}
+  .arena-voting summary{gap:8px}
+  .arena-vote-row{grid-template-columns:26px minmax(0,1fr) minmax(44px,.55fr) 30px;gap:6px}
+}
+@media(max-width:360px){
+  .arena-context{padding:14px}
+  .arena-context-copy h2{font-size:1.48rem}
+  .arena-mode-card{grid-template-columns:30px minmax(0,1fr);gap:10px;padding:13px}
+  .arena-mode-mark{width:30px;height:30px}
+  .mode-side-actions .mode-switch.secondary,.mode-side-actions .mode-countdown{padding-inline:6px;font-size:.72rem}
+  .mode-side-actions .mode-countdown>span{font-size:.5rem;letter-spacing:.03em}
+  .viz-toolbar-actions>button{padding-inline:5px;font-size:.72rem}
+  .arena-ranking{padding-inline:10px}
+}
+@media(max-width:760px) and (orientation:landscape){
+  .canvas-wrap{height:68vh;height:68svh;min-height:220px;max-height:none}
+  .touch-stick{width:100px;height:100px}
+}
+
+/* Fullscreen is a focused play surface: keep only map, controls, and FPS. */
+.visualizer-shell:fullscreen,.visualizer-shell.fullscreen-fallback{display:flex;flex-direction:column;box-sizing:border-box;gap:0;padding:8px;overflow:hidden;overscroll-behavior:none}
+.visualizer-shell:fullscreen>:not(.visualizer-layout),.visualizer-shell.fullscreen-fallback>:not(.visualizer-layout){display:none!important}
+.visualizer-shell:fullscreen .visualizer-layout,.visualizer-shell.fullscreen-fallback .visualizer-layout{display:block;flex:1 1 auto;width:100%;height:auto;min-height:0;margin:0;overflow:hidden}
+.visualizer-shell:fullscreen .visualizer-stage,.visualizer-shell.fullscreen-fallback .visualizer-stage{display:flex;flex-direction:column;width:100%;height:100%;min-height:0;padding:0}
+.visualizer-shell:fullscreen .viz-toolbar,.visualizer-shell.fullscreen-fallback .viz-toolbar{flex:0 0 auto}
+.visualizer-shell:fullscreen .canvas-wrap,.visualizer-shell.fullscreen-fallback .canvas-wrap{flex:1 1 auto;width:100%;height:auto;min-height:0;max-height:none}
+.visualizer-shell:fullscreen .orientation-toggle[hidden],.visualizer-shell.fullscreen-fallback .orientation-toggle[hidden]{display:none!important}
+@media(max-width:760px){
+  .visualizer-shell:fullscreen,.visualizer-shell.fullscreen-fallback{padding:max(6px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}
+  .visualizer-shell:fullscreen .viz-toolbar,.visualizer-shell.fullscreen-fallback .viz-toolbar{gap:7px;padding-bottom:8px}
+  .visualizer-shell:fullscreen .select-label,.visualizer-shell.fullscreen-fallback .select-label{min-height:42px}
+  .visualizer-shell:fullscreen .select-label select,.visualizer-shell.fullscreen-fallback .select-label select{min-height:38px}
+  .visualizer-shell:fullscreen .viz-toolbar-actions,.visualizer-shell.fullscreen-fallback .viz-toolbar-actions{gap:6px}
+  .visualizer-shell:fullscreen .camera-tools,.visualizer-shell.fullscreen-fallback .camera-tools{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .visualizer-shell:fullscreen .viz-toolbar-actions>button,.visualizer-shell:fullscreen .camera-tools button,.visualizer-shell.fullscreen-fallback .viz-toolbar-actions>button,.visualizer-shell.fullscreen-fallback .camera-tools button{min-height:42px}
+  .visualizer-shell:fullscreen .canvas-wrap,.visualizer-shell.fullscreen-fallback .canvas-wrap{border-radius:10px}
+  .visualizer-shell:fullscreen .touch-stick span,.visualizer-shell.fullscreen-fallback .touch-stick span{font-size:.68rem}
+}
+
+/* Landscape phones often have a CSS width above the narrow-mobile breakpoint. */
+@media (pointer:coarse), (max-height:600px) and (orientation:landscape){
+  .visualizer-stage:has(.manual-on) .touch-stick{display:block}
+  .touch-stick{position:absolute;right:max(16px,env(safe-area-inset-right));bottom:max(18px,env(safe-area-inset-bottom));width:clamp(96px,24vw,116px);height:clamp(96px,24vw,116px);z-index:4;touch-action:none;user-select:none}
+  .touch-stick span{top:auto;bottom:calc(100% + 7px);font-size:.68rem}
+}
+@media (max-height:600px) and (orientation:landscape){
+  .visualizer-shell{margin:8px auto 18px}
+  .arena-context{padding:14px 18px;gap:10px 16px}
+  .arena-context-copy p{line-height:1.4}
+  .arena-context-facts{gap:6px}
+  .arena-world-traits{gap:10px}
+  .arena-threat-item{grid-template-rows:auto 92px auto;gap:6px}
+  .arena-threat-gauge{width:88px;height:88px}
+  .arena-world-rules{gap:6px}
+  .arena-world-rules>span,.arena-world-rules>span:nth-child(5){min-height:52px;padding:7px 8px}
+  .viz-toolbar{gap:6px;padding-bottom:7px}
+  .viz-toolbar-actions{gap:6px}
+  .viz-toolbar-actions>button,.camera-tools button{min-height:42px}
+  .canvas-wrap{height:58vh;height:58svh;min-height:220px;max-height:none}
+  .visualizer-shell:fullscreen,.visualizer-shell.fullscreen-fallback{padding:max(4px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(4px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}
+  .visualizer-shell:fullscreen .viz-toolbar,.visualizer-shell.fullscreen-fallback .viz-toolbar{flex-wrap:nowrap;gap:5px;padding-bottom:5px}
+  .visualizer-shell:fullscreen .select-label,.visualizer-shell.fullscreen-fallback .select-label{width:auto;min-width:0;flex:1 1 150px}
+  .visualizer-shell:fullscreen .select-label select,.visualizer-shell.fullscreen-fallback .select-label select{min-width:0}
+  .visualizer-shell:fullscreen .viz-toolbar-actions,.visualizer-shell.fullscreen-fallback .viz-toolbar-actions{flex:0 1 auto;flex-wrap:nowrap}
+  .visualizer-shell:fullscreen .camera-tools,.visualizer-shell.fullscreen-fallback .camera-tools{display:flex;flex-wrap:nowrap}
+  .visualizer-shell:fullscreen .viz-toolbar-actions>button,.visualizer-shell:fullscreen .camera-tools button,.visualizer-shell.fullscreen-fallback .viz-toolbar-actions>button,.visualizer-shell.fullscreen-fallback .camera-tools button{min-height:40px;padding:6px 9px}
+}
