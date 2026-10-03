@@ -285,7 +285,7 @@
       state.camera.initialized = true;
     }
     const title = snapshot.name || 'Команда';
-    document.title = `${title} · Арена DatsMagic`;
+    document.title = `${title} · Арена StadMagic`;
     document.querySelector('#world-label').textContent = `${snapshot.mapSize?.x} × ${snapshot.mapSize?.y} · ${snapshot.name || 'Команда'} · ${snapshot.points ?? 0} золота`;
     rebuildSelect();
     const selected = byId(snapshot, state.selectedId);

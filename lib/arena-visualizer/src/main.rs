@@ -2535,7 +2535,7 @@ impl eframe::App for App {
                 EVec2::new(275., ui.available_height()),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.heading("DatsMagic · Rust");
+                    ui.heading("StadMagic · Rust");
                     if ui.button("Лидерборд (L)").clicked() {
                         self.show_leaderboard = !self.show_leaderboard;
                     }
@@ -2906,7 +2906,7 @@ fn main() -> eframe::Result<()> {
         eprintln!("{e}");
         std::process::exit(2)
     });
-    let window_title = format!("DatsMagic · token: {token}");
+    let window_title = format!("StadMagic · token: {token}");
     let app = App::new(url, hub_url, token, poll);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
@@ -2917,7 +2917,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "DatsMagic Rust Visualizer",
+        "StadMagic Rust Visualizer",
         options,
         Box::new(|_| Ok(Box::new(app))),
     )

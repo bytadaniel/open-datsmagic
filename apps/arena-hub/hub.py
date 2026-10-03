@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DatsMagic control plane: arena lifecycle, private team registry and aggregated results."""
+"""StadMagic control plane: arena lifecycle, private team registry and aggregated results."""
 
 from __future__ import annotations
 
@@ -639,12 +639,12 @@ def markdown_html(source: str) -> str:
     return "\n".join(output)
 
 
-STYLE = '<link rel="stylesheet" href="/static/hub.css">'
+STYLE = '<link rel="icon" type="image/svg+xml" href="/static/stadmagic-mark.svg"><link rel="stylesheet" href="/static/hub.css">'
 
 
 def page(title: str, body: str) -> bytes:
-    nav = '<header><strong>DatsMagic</strong><a href="/">Обзор</a><a href="/arena">Арена</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
-    footer = '<footer class=site-footer>DatsMagic · Мир меняется. Команды остаются.</footer>'
+    nav = '<header><a class="brand" href="/" aria-label="StadMagic — на главную"><img src="/static/stadmagic-mark.svg" alt=""><strong>StadMagic</strong></a><a href="/">Обзор</a><a href="/arena">Арена</a><a href="/worlds">Миры</a><a href="/leaderboard">Рейтинг</a><a href="/docs">Документы</a><a href="/register">Команда</a></header>'
+    footer = '<footer class=site-footer>StadMagic · Мир меняется. Команды остаются.</footer>'
     return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main>{body}</main>{footer}</body></html>").encode("utf-8")
 
 
@@ -655,6 +655,7 @@ def home_html(state: HubState) -> bytes:
       <div class=metrics><div class=metric><small>Сейчас играют</small><strong id=home-world>__WORLD_NAME__</strong></div><div class=metric><small>Запуск</small><strong id=home-run>__ARENA_NAME__</strong></div><div class=metric><small>Статус</small><strong id=home-status>__ARENA_STATUS__</strong></div><div class=metric><small>До смены мира</small><strong id=home-countdown>__COUNTDOWN__ сек.</strong></div></div>
       <p><a id=home-arena-link class="button secondary" href="__ARENA_URL__">Открыть API арены</a> <span id=home-updated class=muted>обновление состояния каждые 5 секунд</span></p>
     </section>
+    <section class="card inspiration-card"><div><span class=eyebrow>Откуда появился StadMagic</span><h2>С благодарностью к Dats.Team</h2><p>Я вдохновился <a href="https://gamethon.datsteam.dev/datsmagic" target="_blank" rel="noopener noreferrer">DatsMagic от Dats.Team</a> и сделал очень похожую самостоятельную реализацию. Официальные игровые серверы закрыты, а мне захотелось дать людям возможность ещё немного поиграть в этот мир.</p><p>StadMagic — неофициальный проект, не связанный с Dats.Team. У меня нет к команде претензий и я ничего от неё не требую. Если Dats.Team попросит, я закрою серверы и доступ к игре.</p></div><span class="inspiration-mark" aria-hidden=true>✦</span></section>
     <section class=grid><a class="card quick-link" href="/arena"><span class=eyebrow>01 · Наблюдай</span><h2>Живая арена</h2><p>Ковры, золото, аномалии и простое ручное управление прямо в браузере.</p><span class=status>Открыть визуализацию →</span></a><a class="card quick-link" href="/worlds"><span class=eyebrow>02 · Участвуй</span><h2>Голосуй за мир</h2><p>Один голос от команды. Меняй решение до старта следующей арены.</p><span class=status>Открыть каталог →</span></a><a class="card quick-link" href="/leaderboard"><span class=eyebrow>03 · Сравнивай</span><h2>Следи за командами</h2><p>Результаты активного запуска, отдельные арены и сводные итоги.</p><span class=status>Открыть лидерборд →</span></a><a class="card quick-link" href="/register"><span class=eyebrow>04 · Представься</span><h2>Создай команду</h2><p>Выбери уникальное имя и получи токен для игрового бота.</p><span class=status>Зарегистрировать команду →</span></a></section>
     <script>async function refreshHome(){try{const d=await(await fetch('/api/worlds')).json(),a=d.active||{};document.querySelector('#home-world').textContent=a.world_name||'Подготовка арены';document.querySelector('#home-run').textContent=a.arena_name||'Ожидание';document.querySelector('#home-status').textContent=a.status||'starting';document.querySelector('#home-countdown').textContent=`${a.seconds_remaining??0} сек.`;if(a.url)document.querySelector('#home-arena-link').href=a.url;document.querySelector('#home-updated').textContent=`${d.worlds?.length??0} миров · обновлено ${new Date().toLocaleTimeString()}`}catch(_){document.querySelector('#home-updated').textContent='Нет связи с Hub API' }}refreshHome();setInterval(refreshHome,5000)</script>
     """
@@ -667,7 +668,7 @@ def home_html(state: HubState) -> bytes:
     }
     for placeholder, value in values.items():
         body = body.replace(placeholder, value)
-    return page("DatsMagic Hub", body)
+    return page("StadMagic", body)
 
 
 def arena_visualizer_html() -> bytes:
@@ -699,7 +700,7 @@ def arena_visualizer_html() -> bytes:
     </section>
     <script src="/static/arena-visualizer.js" defer></script>
     '''
-    return page("Живая арена · DatsMagic", body)
+    return page("Живая арена · StadMagic", body)
 
 
 def docs_html() -> bytes:
@@ -707,7 +708,7 @@ def docs_html() -> bytes:
     <h1>Документация</h1><section class=card><p>Всё необходимое, чтобы зарегистрировать команду и подключить игрового бота.</p>
     <div class=tabs><a class=button href="/docs/api">Игровой API</a><a class=button href="/docs/world">Как играть и написать бота</a><a class=button href="/api/docs/mechanics">Техническая механика (Markdown)</a></div></section>
     """
-    return page("Документация · DatsMagic", body)
+    return page("Документация · StadMagic", body)
 
 
 def register_html() -> bytes:
@@ -716,7 +717,7 @@ def register_html() -> bytes:
     <form id=f><label for=n>Имя команды</label><input id=n maxlength=48 autocomplete=organization required><p><button>Создать команду и токен</button></p></form><div id=result role=status aria-live=polite></div></section>
     <script>document.querySelector('#f').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/api/teams',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.querySelector('#n').value})});const d=await r.json();const out=document.querySelector('#result');out.replaceChildren();out.className=r.ok?'ok':'error';if(!r.ok){out.textContent=d.error||'Ошибка';return}const title=document.createElement('p');title.textContent=`Команда ${d.name} создана. Сохраните токен сейчас:`;const token=document.createElement('code');token.textContent=d.token;token.style='display:block;overflow-wrap:anywhere;padding:1rem;margin:.75rem 0';const copy=document.createElement('button');copy.type='button';copy.textContent='Скопировать токен';copy.onclick=async()=>{await navigator.clipboard.writeText(d.token);copy.textContent='Скопировано'};const warning=document.createElement('p');warning.textContent='Токен показывается только один раз. Не отправляйте его другим и не публикуйте.';out.append(title,token,copy,warning);document.querySelector('#f').reset()});</script>
     """
-    return page("Регистрация · DatsMagic", body)
+    return page("Регистрация · StadMagic", body)
 
 
 def worlds_html() -> bytes:
@@ -739,7 +740,7 @@ def worlds_html() -> bytes:
     refresh();setInterval(refresh,5000)
     </script>
     """
-    return page("Миры · DatsMagic", body)
+    return page("Миры · StadMagic", body)
 
 
 def leaderboard_html() -> bytes:
@@ -796,7 +797,7 @@ def leaderboard_html() -> bytes:
     scope.onchange=refresh;world.onchange=()=>{runOffset=0;refresh()};document.querySelector('#prev-page').onclick=()=>{runOffset=Math.max(0,runOffset-runLimit);refresh()};document.querySelector('#next-page').onclick=()=>{runOffset+=runLimit;refresh()};refresh();setInterval(refresh,5000)
     </script>
     """
-    return page("Лидерборд · DatsMagic", body)
+    return page("Лидерборд · StadMagic", body)
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -821,7 +822,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         state = self.state
         try:
-            if parsed.path == "/static/hub.css":
+            if parsed.path == "/static/stadmagic-mark.svg":
+                self.send_bytes(200, (HUB_DIR / "static" / "stadmagic-mark.svg").read_bytes(), "image/svg+xml; charset=utf-8")
+            elif parsed.path == "/static/hub.css":
                 self.send_bytes(200, (HUB_DIR / "static" / "hub.css").read_bytes(), "text/css; charset=utf-8")
             elif parsed.path in {"/static/arena-visualizer.css", "/static/arena-visualizer.js"}:
                 asset = "arena-visualizer.css" if parsed.path.endswith(".css") else "arena-visualizer.js"
@@ -1025,7 +1028,7 @@ async def serve() -> None:
     handler = type("BoundRequestHandler", (RequestHandler,), {"state": state})
     httpd = ThreadingHTTPServer((HUB_HOST, HUB_PORT), handler)
     threading.Thread(target=httpd.serve_forever, name="hub-http", daemon=True).start()
-    print(f"DatsMagic Hub: http://{HUB_HOST}:{HUB_PORT} · arena={ARENA_HOST}:{ARENA_PORT} · {len(world_catalog)} worlds · run={RUN_SECONDS}s")
+    print(f"StadMagic Hub: http://{HUB_HOST}:{HUB_PORT} · arena={ARENA_HOST}:{ARENA_PORT} · {len(world_catalog)} worlds · run={RUN_SECONDS}s")
     supervisor = asyncio.create_task(run_arena_loop(state), name="arena-supervisor")
     try:
         await supervisor
@@ -1038,7 +1041,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(serve())
     except KeyboardInterrupt:
-        print("DatsMagic Hub stopped")
+        print("StadMagic Hub stopped")
     except Exception as exc:
-        print(f"DatsMagic Hub startup error: {exc}", file=sys.stderr)
+        print(f"StadMagic Hub startup error: {exc}", file=sys.stderr)
         raise
