@@ -660,3 +660,19 @@ details.disclosure-closing>.disclosure-content{grid-template-rows:0fr!important;
   .visualizer-shell:fullscreen .camera-tools,.visualizer-shell.fullscreen-fallback .camera-tools{display:flex;flex-wrap:nowrap}
   .visualizer-shell:fullscreen .viz-toolbar-actions>button,.visualizer-shell:fullscreen .camera-tools button,.visualizer-shell.fullscreen-fallback .viz-toolbar-actions>button,.visualizer-shell.fullscreen-fallback .camera-tools button{min-height:40px;padding:6px 9px}
 }
+@media (pointer:coarse), (max-width:760px){
+  .visualizer-shell:fullscreen .viz-toolbar,.visualizer-shell:fullscreen .viz-sidebar,.visualizer-shell:fullscreen .viz-footer,
+  .visualizer-shell:fullscreen .viz-fps,.visualizer-shell:fullscreen .connection-badge{display:none!important}
+  .visualizer-shell:fullscreen .visualizer-layout{display:block;height:100%;width:100%}
+  .visualizer-shell:fullscreen .visualizer-stage{display:block;height:100%;width:100%}
+  .visualizer-shell:fullscreen .canvas-wrap{height:100%;width:100%;min-height:0;max-height:none;border:0;border-radius:0}
+  .visualizer-shell.fullscreen-fallback .viz-sidebar,.visualizer-shell.fullscreen-fallback .viz-footer,
+  .visualizer-shell.fullscreen-fallback .viz-fps,.visualizer-shell.fullscreen-fallback .connection-badge{display:none!important}
+  .visualizer-shell.fullscreen-fallback .viz-toolbar{display:flex;position:absolute;z-index:8;right:max(8px,env(safe-area-inset-right));top:max(8px,env(safe-area-inset-top));padding:0}
+  .visualizer-shell.fullscreen-fallback .select-label,.visualizer-shell.fullscreen-fallback .camera-tools,
+  .visualizer-shell.fullscreen-fallback .viz-toolbar-actions>button:not(#fullscreen-toggle){display:none!important}
+  .visualizer-shell.fullscreen-fallback #fullscreen-toggle{min-height:40px;padding:7px 11px;border-radius:999px;background:#102033d9}
+  .visualizer-shell.fullscreen-fallback .visualizer-layout{display:block;height:100%;width:100%}
+  .visualizer-shell.fullscreen-fallback .visualizer-stage{display:block;height:100%;width:100%;padding:0}
+  .visualizer-shell.fullscreen-fallback .canvas-wrap{height:100%;width:100%;min-height:0;max-height:none;border:0;border-radius:0}
+}

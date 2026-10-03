@@ -869,7 +869,7 @@ def home_html(state: HubState) -> bytes:
 
 def arena_visualizer_html() -> bytes:
     body = '''
-    <link rel="stylesheet" href="/static/arena-visualizer.css?v=8.8">
+    <link rel="stylesheet" href="/static/arena-visualizer.css?v=8.9">
     <section class="visualizer-shell">
       <header class="arena-page-heading"><h1>Арена</h1><div id="arena-connection-status" class="arena-connection-status connecting" aria-live="polite"><i aria-hidden="true"></i><span>Подключаемся</span></div></header>
       <section class="arena-context" aria-live="polite">
