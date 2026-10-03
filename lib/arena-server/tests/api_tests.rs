@@ -200,18 +200,28 @@ async fn observer_token_reads_the_arena_without_creating_a_fleet_or_accepting_co
     assert_eq!(json["transports"].as_array().unwrap().len(), 0);
     assert_eq!(json["enemies"].as_array().unwrap().len(), 5);
     assert_eq!(json["name"], "Наблюдатель");
-    assert!(!engine.get_snapshot().world.players.contains_key("__dats_observer__"));
+    assert!(!engine
+        .get_snapshot()
+        .world
+        .players
+        .contains_key("__dats_observer__"));
 
     let request = Request::builder()
         .method("POST")
         .uri("/play/magcarp/player/move")
         .header("X-Auth-Token", "internal-observer-test-secret")
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"transports":[{"id":"observer-visible-team_0","acceleration":{"x":1,"y":0}}]}"#))
+        .body(Body::from(
+            r#"{"transports":[{"id":"observer-visible-team_0","acceleration":{"x":1,"y":0}}]}"#,
+        ))
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(!engine.get_snapshot().world.players.contains_key("__dats_observer__"));
+    assert!(!engine
+        .get_snapshot()
+        .world
+        .players
+        .contains_key("__dats_observer__"));
     std::env::remove_var("DATS_OBSERVER_TOKEN");
 }
 

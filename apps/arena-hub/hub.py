@@ -408,8 +408,10 @@ class HubState:
         self.world_configs = world_configs
         self.registry = TeamRegistry(REGISTRY_PATH)
         self.observer_token = secrets.token_urlsafe(32)
+        self.control_token = ARENA_CONTROL_TOKEN or secrets.token_urlsafe(32)
         self.store = Store(DB_PATH)
         self.lock = threading.RLock()
+        self.realtime_tickets: dict[str, dict[str, Any]] = {}
         self.votes: dict[str, str] = {}
         self.arena: dict[str, Any] = {
             "status": "starting", "world_number": None, "world_id": None, "world_name": None,
@@ -606,6 +608,8 @@ async def run_arena_loop(state: HubState) -> None:
             "DATS_OBSERVER_TOKEN": state.observer_token,
             "DATS_LEADERBOARD_PATH": str(report_path),
             "DATS_WORLD_STATUS_PATH": str(status_path),
+            "DATS_HUB_INTERNAL_URL": os.environ.get("DATS_HUB_INTERNAL_URL", f"http://{HUB_HOST}:{HUB_PORT}"),
+            "DATS_HUB_CONTROL_TOKEN": state.control_token,
         })
         process: subprocess.Popen[bytes] | None = None
         planned_stop = False
@@ -978,7 +982,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path not in {"/api/teams", "/api/votes", "/api/visualizer/move"}:
+        if path not in {"/api/teams", "/api/votes", "/api/visualizer/move", "/api/visualizer/ticket", "/api/visualizer/lease", "/internal/visualizer/ticket/consume"}:
             self.send_json(404, {"error": "not found"})
             return
         try:
@@ -989,6 +993,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if path == "/api/visualizer/move":
                 self.handle_visualizer_move(body)
+                return
+            if path == "/api/visualizer/ticket":
+                self.handle_visualizer_ticket(body)
+                return
+            if path == "/api/visualizer/lease":
+                self.handle_visualizer_lease(body)
+                return
+            if path == "/internal/visualizer/ticket/consume":
+                self.handle_consume_visualizer_ticket(body)
                 return
             if path == "/api/teams":
                 name = str(body.get("name", ""))
@@ -1015,6 +1028,97 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
         except OSError as exc:
             self.send_json(500, {"error": str(exc)})
+
+    def handle_visualizer_ticket(self, body: Any) -> None:
+        if not isinstance(body, dict) or body:
+            raise ValueError("ticket request body must be an empty JSON object")
+        supplied_token = str(self.headers.get("X-Auth-Token", "")).strip()
+        if supplied_token:
+            team_id = self.state.registry.resolve_token(supplied_token)
+            if team_id is None:
+                self.send_json(401, {"error": "unknown team token"})
+                return
+            player_id = team_id
+            mode = "player"
+            name = self.state.registry.names().get(team_id, "Команда")
+        else:
+            player_id = "__dats_observer__"
+            mode = "observer"
+            name = "Наблюдатель"
+        arena = self.state.current_arena()
+        if arena.get("status") != "running" or not arena.get("run_id"):
+            self.send_json(503, {"error": "active arena is not ready"})
+            return
+        ticket = secrets.token_urlsafe(32)
+        now = time.time()
+        with self.state.lock:
+            self.state.realtime_tickets[ticket] = {
+                "player_id": player_id, "name": name, "mode": mode,
+                "run_id": arena["run_id"], "expires_at": now + 10,
+            }
+            self.state.realtime_tickets = {
+                key: value for key, value in self.state.realtime_tickets.items()
+                if value["expires_at"] > now
+            }
+        base = str(arena["url"])
+        ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        self.send_json(200, {"ticket": ticket, "websocketUrl": f"{ws_base}/stream/visualizer",
+                             "expiresInMs": 10000, "mode": mode, "name": name})
+
+    def handle_consume_visualizer_ticket(self, body: Any) -> None:
+        if self.headers.get("X-Arena-Control-Token") != self.state.control_token:
+            self.send_json(401, {"error": "unauthorized"})
+            return
+        ticket = str(body.get("ticket", "")) if isinstance(body, dict) else ""
+        now = time.time()
+        with self.state.lock:
+            claims = self.state.realtime_tickets.pop(ticket, None)
+            active_run_id = self.state.arena.get("run_id")
+        if not claims or claims["expires_at"] <= now or claims["run_id"] != active_run_id:
+            self.send_json(401, {"error": "ticket expired, consumed, or for inactive arena"})
+            return
+        self.send_json(200, {key: claims[key] for key in ("player_id", "name", "mode", "run_id")})
+
+    def handle_visualizer_lease(self, body: Any) -> None:
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        token = str(self.headers.get("X-Auth-Token", "")).strip()
+        team_id = self.state.registry.resolve_token(token) if token else None
+        if team_id is None:
+            self.send_json(401, {"error": "unknown team token"})
+            return
+        lease_path = (Path(os.environ["DATS_MANUAL_CONTROL_FILE"]) if os.environ.get("DATS_MANUAL_CONTROL_FILE") else
+                      ROOT / "lib" / "bot-variants" / "player_2" / f"manual_control_{token_id(token)}.json")
+        release_id = str(body.get("releaseLeaseId", ""))
+        if release_id:
+            try:
+                current = json.loads(lease_path.read_text(encoding="utf-8"))
+                if current.get("leaseId") == release_id:
+                    lease_path.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError):
+                pass
+            self.send_json(200, {"status": "released"})
+            return
+        carpet_id = body.get("carpetId")
+        lease_id = str(body.get("leaseId", ""))
+        suffix = carpet_id.removeprefix(f"{team_id}_") if isinstance(carpet_id, str) else ""
+        if not suffix.isdecimal() or not lease_id or len(lease_id) > 100:
+            self.send_json(403, {"error": "manual control is only allowed for your own carpet"})
+            return
+        if lease_path.is_file():
+            try:
+                current = json.loads(lease_path.read_text(encoding="utf-8"))
+                if int(current.get("expiresAtUnixMs", 0)) > int(time.time() * 1000) and current.get("leaseId") != lease_id:
+                    self.send_json(409, {"error": "this team already has an active manual-control session"})
+                    return
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        lease = {"carpetId": carpet_id, "leaseId": lease_id, "expiresAtUnixMs": int(time.time() * 1000) + 1500}
+        lease_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = lease_path.with_name(f".{lease_path.name}.{uuid.uuid4().hex}.tmp")
+        temporary_path.write_text(json.dumps(lease), encoding="utf-8")
+        os.replace(temporary_path, lease_path)
+        self.send_json(200, {"status": "renewed", "expiresInMs": 1500})
 
     def handle_visualizer_move(self, body: Any) -> None:
         if not isinstance(body, dict):

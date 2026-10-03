@@ -17,12 +17,12 @@
 
   const state = {
     token: '', observer: false, current: null, previous: null, receivedAt: 0, previousAt: 0,
-    selectedId: '', follow: false, manual: false, leaseId: '', releaseLeaseId: '',
+    selectedId: '', follow: false, manual: false, leaseId: '',
     camera: { x: 0, y: 0, zoom: 1, initialized: false },
     width: 0, height: 0, dpr: 1, frameAt: performance.now(), frameCount: 0,
     fps: 0, pointer: null, pointerInside: false, stickVector: null,
     pointers: new Map(), gestureDistance: 0, dragging: false, dragStart: null,
-    polling: false,
+    realtime: null, connecting: false, reconnectDelay: 250, commandTimer: 0, leaseTimer: 0,
   };
 
   const ownCarpets = snapshot => snapshot?.transports || [];
@@ -296,47 +296,100 @@
   }
 
   async function requestSnapshot() {
-    if ((!state.token && !state.observer) || state.polling) return;
-    state.polling = true;
+    if ((!state.token && !state.observer) || state.connecting || state.realtime?.readyState <= WebSocket.OPEN) return;
+    state.connecting = true;
     try {
-      const body = { transports: [] };
-      if (state.manual && state.selectedId) {
-        const selected = byId(state.current, state.selectedId);
-        if (selected?.own && alive(selected)) {
-          if (!state.leaseId) state.leaseId = newLeaseId();
-          const acceleration = accelerationFor(selected, state.current);
-          if (acceleration) body.transports = [{ id: selected.id, acceleration }];
-          body.manualCarpetId = selected.id;
-          body.leaseId = state.leaseId;
-        } else disableManual(true);
-      }
-      if (state.releaseLeaseId) body.releaseLeaseId = state.releaseLeaseId;
       const headers = { 'Content-Type': 'application/json' };
       if (state.token) headers['X-Auth-Token'] = state.token;
-      const response = await fetch('/api/visualizer/move', { method: 'POST', headers, body: JSON.stringify(body) });
-      const snapshot = await response.json();
-      if (!response.ok) throw Object.assign(new Error(snapshot.error || `Ошибка API ${response.status}`), { status: response.status });
-      updateSnapshot(snapshot);
-      setConnection('connected', `На связи · ${new Date().toLocaleTimeString()}`);
-      message.textContent = '';
+      const response = await fetch('/api/visualizer/ticket', { method: 'POST', headers, body: '{}' });
+      const data = await response.json();
+      if (!response.ok) throw Object.assign(new Error(data.error || `Ошибка API ${response.status}`), { status: response.status });
+      const socket = new WebSocket(data.websocketUrl, ['stadmagic.v1', `stadmagic-ticket.${data.ticket}`]);
+      state.realtime = socket;
+      socket.onopen = () => {
+        state.connecting = false;
+        state.reconnectDelay = 250;
+        setConnection('connected', `На связи · ${data.name}`);
+        message.textContent = '';
+        if (state.commandTimer) clearInterval(state.commandTimer);
+        state.commandTimer = setInterval(sendRealtimeCommand, 100);
+        if (state.manual) startLeaseHeartbeat();
+      };
+      socket.onmessage = event => {
+        try {
+          const packet = JSON.parse(event.data);
+          if (packet.type === 'snapshot') updateSnapshot(packet.state);
+          else if (packet.type === 'error') message.textContent = packet.error;
+        } catch (_) { /* ignore malformed server frame */ }
+      };
+      socket.onerror = () => setConnection('error', 'Переподключение…');
+      socket.onclose = () => {
+        state.connecting = false;
+        if (state.realtime === socket) state.realtime = null;
+        if (state.commandTimer) clearInterval(state.commandTimer);
+        if (state.leaseTimer) clearInterval(state.leaseTimer);
+        state.commandTimer = 0;
+        state.leaseTimer = 0;
+        setConnection('error', 'Связь потеряна · переподключение…');
+        if (state.token || state.observer) {
+          const delay = state.reconnectDelay;
+          state.reconnectDelay = Math.min(5000, state.reconnectDelay * 2);
+          setTimeout(requestSnapshot, delay);
+        }
+      };
     } catch (error) {
       setConnection('error', error.status === 401 ? 'Токен не принят' : 'Нет связи');
       message.textContent = error.message;
       message.className = 'viz-message error';
-      if (error.status === 409 && state.manual) disableManual(false);
+      if (state.leaseTimer) clearInterval(state.leaseTimer);
+      state.leaseTimer = 0;
       if (error.status === 401) { state.token = ''; state.observer = false; state.manual = false; state.leaseId = ''; }
-    } finally {
-      state.releaseLeaseId = '';
-      state.polling = false;
-      if (state.token || state.observer) setTimeout(requestSnapshot, 200);
+      state.connecting = false;
+      if (state.token || state.observer) {
+        const delay = state.reconnectDelay;
+        state.reconnectDelay = Math.min(5000, state.reconnectDelay * 2);
+        setTimeout(requestSnapshot, delay);
+      }
     }
+  }
+
+  function sendRealtimeCommand() {
+    if (!state.manual || state.realtime?.readyState !== WebSocket.OPEN) return;
+    // If the link falls behind, drop this update; the next interval sends the newest aim vector.
+    if (state.realtime.bufferedAmount > 4096) return;
+    const selected = byId(state.current, state.selectedId);
+    if (!selected?.own || !alive(selected)) { disableManual(true); return; }
+    const acceleration = accelerationFor(selected, state.current);
+    if (acceleration) state.realtime.send(JSON.stringify({ type: 'commands', transports: [{ id: selected.id, acceleration }] }));
+  }
+
+  function renewLease(releaseLeaseId = '') {
+    if (!state.token) return Promise.resolve();
+    const headers = { 'Content-Type': 'application/json', 'X-Auth-Token': state.token };
+    const body = releaseLeaseId ? { releaseLeaseId } : { carpetId: state.selectedId, leaseId: state.leaseId };
+    return fetch('/api/visualizer/lease', { method: 'POST', headers, body: JSON.stringify(body) }).then(response => {
+      if (response.status === 409 && state.manual) {
+        message.textContent = 'Ручное управление уже включено в другой вкладке.';
+        disableManual(false);
+      }
+      return response;
+    });
+  }
+
+  function startLeaseHeartbeat() {
+    if (!state.manual || state.observer || !state.leaseId) return;
+    renewLease().catch(() => {});
+    if (state.leaseTimer) clearInterval(state.leaseTimer);
+    state.leaseTimer = setInterval(() => renewLease().catch(() => {}), 500);
   }
 
   function disableManual(release) {
     state.manual = false;
     touchStick.classList.remove('active');
     state.stickVector = null;
-    if (release && state.leaseId) state.releaseLeaseId = state.leaseId;
+    if (state.leaseTimer) clearInterval(state.leaseTimer);
+    state.leaseTimer = 0;
+    if (release && state.leaseId) renewLease(state.leaseId).catch(() => {});
     state.leaseId = '';
     manualButton.textContent = 'Ручное управление: выкл.';
     manualButton.classList.remove('manual-on');
@@ -346,24 +399,24 @@
     if (!item?.own || !alive(item)) return;
     state.manual = true;
     state.leaseId = newLeaseId();
-    state.releaseLeaseId = '';
     manualButton.textContent = 'Ручное управление: вкл.';
     manualButton.classList.add('manual-on');
-    requestSnapshot();
+    startLeaseHeartbeat();
   }
 
   function connect(token, observer) {
-    const previousToken = state.token, previousLease = state.leaseId || state.releaseLeaseId;
+    const previousToken = state.token, previousLease = state.leaseId;
     disableManual(false);
-    state.releaseLeaseId = '';
     if (previousToken && previousLease) {
-      fetch('/api/visualizer/move', { method: 'POST', keepalive: true,
+      fetch('/api/visualizer/lease', { method: 'POST', keepalive: true,
         headers: { 'Content-Type': 'application/json', 'X-Auth-Token': previousToken },
-        body: JSON.stringify({ transports: [], releaseLeaseId: previousLease }) }).catch(() => {});
+        body: JSON.stringify({ releaseLeaseId: previousLease }) }).catch(() => {});
     }
     state.token = token;
     state.observer = observer;
     state.previous = state.current = null;
+    if (state.realtime) state.realtime.close();
+    state.realtime = null;
     state.camera.initialized = false;
     state.selectedId = '';
     state.follow = false;
@@ -527,9 +580,9 @@
   requestAnimationFrame(draw);
   window.addEventListener('pagehide', () => {
     if (state.token && state.leaseId) {
-      fetch('/api/visualizer/move', { method: 'POST', keepalive: true,
+      fetch('/api/visualizer/lease', { method: 'POST', keepalive: true,
         headers: { 'Content-Type': 'application/json', 'X-Auth-Token': state.token },
-        body: JSON.stringify({ transports: [], releaseLeaseId: state.leaseId }) }).catch(() => {});
+        body: JSON.stringify({ releaseLeaseId: state.leaseId }) }).catch(() => {});
     }
   });
 })();

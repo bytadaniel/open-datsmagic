@@ -71,6 +71,8 @@ pub struct GameEngine {
     state: SharedGameState,
     /// Кэшированный неизменяемый снапшот последнего завершенного тика
     latest_snapshot: Arc<RwLock<Arc<WorldSnapshot>>>,
+    /// Latest-value channel for realtime web visualizer subscribers.
+    snapshot_tx: watch::Sender<Arc<WorldSnapshot>>,
     /// Обработчик физического шага
     physics_handler: Arc<tokio::sync::Mutex<Box<dyn PhysicsStepHandler>>>,
     /// Обработчик пространственных коллизий
@@ -87,6 +89,7 @@ impl GameEngine {
         let friction = config.friction;
         let initial_state = GameState::new();
         let initial_snapshot = Arc::new(initial_state.to_snapshot());
+        let (snapshot_tx, _) = watch::channel(Arc::clone(&initial_snapshot));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let mut spatial_engine = crate::spatial::WorldSpatialEngine::default()
@@ -145,6 +148,7 @@ impl GameEngine {
             command_buffer: Arc::new(Mutex::new(InputCommandBuffer::new())),
             state: Arc::new(tokio::sync::RwLock::new(initial_state)),
             latest_snapshot: Arc::new(RwLock::new(initial_snapshot)),
+            snapshot_tx,
             physics_handler: Arc::new(tokio::sync::Mutex::new(Box::new(
                 crate::physics::WorldPhysicsEngine::new(friction),
             ))),
@@ -235,9 +239,38 @@ impl GameEngine {
             .register_batch_commands(player_id, commands)
     }
 
+    /// Принимает браузерные realtime команды с latest-value semantics внутри текущего тика.
+    pub fn register_realtime_batch_commands(
+        &self,
+        player_id: PlayerId,
+        commands: Vec<(String, PlayerCommand)>,
+    ) -> Result<usize, CommandError> {
+        let snapshot = self.latest_snapshot.read();
+        if snapshot.game_status != SessionStatus::Active {
+            return Err(CommandError::SessionNotActive);
+        }
+        if snapshot
+            .world
+            .players
+            .get(&player_id)
+            .is_some_and(|player| player.is_destroyed())
+        {
+            return Err(CommandError::PlayerDestroyed);
+        }
+        drop(snapshot);
+        self.command_buffer
+            .lock()
+            .register_realtime_batch_commands(player_id, commands)
+    }
+
     /// Возвращает актуальный неизменяемый снимок состояния мира без блокировки потока симуляции
     pub fn get_snapshot(&self) -> Arc<WorldSnapshot> {
         self.latest_snapshot.read().clone()
+    }
+
+    /// Subscribe to the latest completed game snapshot; slow consumers skip stale versions.
+    pub fn subscribe_snapshots(&self) -> watch::Receiver<Arc<WorldSnapshot>> {
+        self.snapshot_tx.subscribe()
     }
 
     /// Изменяет текущий статус сессии (Active, Paused, Finished)
@@ -245,14 +278,16 @@ impl GameEngine {
         let mut state = self.state.write().await;
         state.status = new_status;
         let snapshot = Arc::new(state.to_snapshot());
-        *self.latest_snapshot.write() = snapshot;
+        *self.latest_snapshot.write() = Arc::clone(&snapshot);
+        self.snapshot_tx.send_replace(snapshot);
     }
 
     /// Принудительно публикует текущее состояние в кэшированный снимок
     pub async fn publish_snapshot(&self) {
         let state = self.state.read().await;
         let snapshot = Arc::new(state.to_snapshot());
-        *self.latest_snapshot.write() = snapshot;
+        *self.latest_snapshot.write() = Arc::clone(&snapshot);
+        self.snapshot_tx.send_replace(snapshot);
     }
 
     /// Возвращает текущий номер тика симулятора
@@ -303,7 +338,8 @@ impl GameEngine {
         // Шаг 4: Инкремент тика и публикация обновленного снапшота
         state.tick += 1;
         let snapshot = Arc::new(state.to_snapshot());
-        *self.latest_snapshot.write() = snapshot;
+        *self.latest_snapshot.write() = Arc::clone(&snapshot);
+        self.snapshot_tx.send_replace(snapshot);
 
         let elapsed = start_time.elapsed();
         let remaining = tick_duration.saturating_sub(elapsed);

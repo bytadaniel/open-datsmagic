@@ -90,6 +90,10 @@ class HubTests(unittest.TestCase):
         self.assertIn("function drawCoins(ctx, snapshot)", script)
         self.assertIn("worldRadius * factor", script)
         self.assertIn("headers['X-Auth-Token'] = state.token", script)
+        self.assertIn("/api/visualizer/ticket", script)
+        self.assertIn("new WebSocket(data.websocketUrl", script)
+        self.assertIn("setInterval(sendRealtimeCommand, 100)", script)
+        self.assertNotIn("setTimeout(requestSnapshot, 200)", script)
         self.assertNotIn("body.token", script)
         self.assertNotIn("navigator.sendBeacon", script)
         self.assertNotIn("offscreen", script)
@@ -165,6 +169,73 @@ class HubTests(unittest.TestCase):
                 RequestHandler.handle_visualizer_move(read_only, {"transports": [{"id": "any", "acceleration": {"x": 1, "y": 0}}]})
                 self.assertEqual(read_only.responses[0][0], 403)
                 upstream.assert_not_called()
+
+    def test_visualizer_realtime_ticket_is_short_lived_single_use_and_bound_to_active_run(self):
+        import threading
+
+        class HandlerStub:
+            def __init__(self, state, headers=None):
+                self.state = state
+                self.headers = headers or {}
+                self.responses = []
+            def send_json(self, status, payload): self.responses.append((status, payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = TeamRegistry(Path(directory) / "registry.json")
+            team = registry.register("private-token", "Realtime Team")
+            state = SimpleNamespace(
+                registry=registry, lock=threading.RLock(), realtime_tickets={}, control_token="internal-secret",
+                arena={"status":"running", "run_id":"run-7"},
+                current_arena=lambda: {"status":"running", "run_id":"run-7", "url":"https://game.example"},
+            )
+            player = HandlerStub(state, {"X-Auth-Token":"private-token"})
+            RequestHandler.handle_visualizer_ticket(player, {})
+            status, issued = player.responses[0]
+            self.assertEqual(status, 200)
+            self.assertEqual(issued["mode"], "player")
+            self.assertEqual(issued["websocketUrl"], "wss://game.example/stream/visualizer")
+            self.assertNotIn("private-token", json.dumps(issued))
+
+            consume = HandlerStub(state, {"X-Arena-Control-Token":"internal-secret"})
+            RequestHandler.handle_consume_visualizer_ticket(consume, {"ticket":issued["ticket"]})
+            self.assertEqual(consume.responses[0], (200, {
+                "player_id":team["team_id"], "name":"Realtime Team", "mode":"player", "run_id":"run-7"
+            }))
+            replay = HandlerStub(state, {"X-Arena-Control-Token":"internal-secret"})
+            RequestHandler.handle_consume_visualizer_ticket(replay, {"ticket":issued["ticket"]})
+            self.assertEqual(replay.responses[0][0], 401)
+
+            invalid = HandlerStub(state, {"X-Auth-Token":"unknown"})
+            RequestHandler.handle_visualizer_ticket(invalid, {})
+            self.assertEqual(invalid.responses[0][0], 401)
+
+            observer = HandlerStub(state)
+            RequestHandler.handle_visualizer_ticket(observer, {})
+            self.assertEqual(observer.responses[0][1]["mode"], "observer")
+
+    def test_visualizer_lease_heartbeat_is_small_owner_scoped_and_releasable(self):
+        class HandlerStub:
+            def __init__(self, registry, headers):
+                self.state = SimpleNamespace(registry=registry)
+                self.headers = headers
+                self.responses = []
+            def send_json(self, status, payload): self.responses.append((status, payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = TeamRegistry(Path(directory) / "registry.json")
+            token = "lease-team-token"
+            team = registry.register(token, "Lease Team")
+            path = Path(directory) / "manual.json"
+            handler = HandlerStub(registry, {"X-Auth-Token": token})
+            body = {"carpetId":f"{team['team_id']}_2", "leaseId":"lease-a"}
+            with patch.dict(os.environ, {"DATS_MANUAL_CONTROL_FILE":str(path)}):
+                RequestHandler.handle_visualizer_lease(handler, body)
+                lease = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(handler.responses[0][0], 200)
+                self.assertEqual(lease["carpetId"], body["carpetId"])
+                self.assertLessEqual(lease["expiresAtUnixMs"], __import__("time").time() * 1000 + 1500)
+                RequestHandler.handle_visualizer_lease(handler, {"releaseLeaseId":"lease-a"})
+                self.assertFalse(path.exists())
 
     def test_world_catalog_and_no_immediate_repeat(self):
         worlds = load_world_catalog()

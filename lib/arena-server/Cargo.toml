@@ -13,7 +13,8 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
+futures-util = "0.3"
 tower = { version = "0.5.3", features = ["util"] }
 
 [dev-dependencies]

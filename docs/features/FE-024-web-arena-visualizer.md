@@ -20,10 +20,10 @@ related_test_cases: [TC-WEB-VISUALIZER-01]
 
 ## 2. Архитектурное решение
 
-- `apps/arena-hub/static/arena-visualizer.js` отвечает за Canvas, камеру, выбор сущностей, polling и ввод.
+- `apps/arena-hub/static/arena-visualizer.js` отвечает за Canvas, камеру, выбор сущностей, realtime snapshots и ввод; сетевой цикл не блокирует `requestAnimationFrame`.
 - `apps/arena-hub/static/arena-visualizer.css` задаёт адаптивную компоновку и мобильный виртуальный стик.
 - `apps/arena-hub/hub.py` отдаёт страницу/ассеты и `POST /api/visualizer/move`. Hub проверяет токен игрока либо использует закрытый observer credential, вызывает текущий arena host через `POST /play/magcarp/player/move` и передаёт снимок.
-- Частота polling — 200 мс или реже. Canvas перерисовывается через requestAnimationFrame, а между двумя snapshot позиции плавно интерполируются.
+- Снимки и ручные команды веб-визуализатора идут по отдельному WebSocket каналу. Он выдаёт latest snapshot на тик (200 мс), коалесцирует устаревшие версии и не меняет REST API ботов. Lease ручного управления обновляется отдельным малым heartbeat.
 - Для обзора: колесо/щипок — zoom, drag/стрелки — pan; кнопка слежения центрирует выбранную цель. Клик по ковру выбирает его, выбор не включает управление.
 - Для управления: мышь задаёт экранный вектор от центра выбранного ковра к указателю, как в Rust-визуализаторе; его длина ограничивается `maxAccel` в CSS-пикселях и потому не зависит от zoom. На touch виртуальный стик задаёт направление/длину, экранный Y инвертируется в координаты мира.
 - Анонимный наблюдатель использует тот же игровой POST с закрытым `DATS_OBSERVER_TOKEN`, который Hub передаёт процессу арены. Arena возвращает все ковры в `enemies`, оставляет `transports` пустым и не создаёт состояние игрока. Observer-команда с непустым `transports` отклоняется.
@@ -37,7 +37,7 @@ related_test_cases: [TC-WEB-VISUALIZER-01]
 
 ### Hub endpoint
 
-`POST /api/visualizer/move`
+`POST /api/visualizer/move` остаётся совместимым fallback endpoint; основной браузерный контракт описан в [FE-026](FE-026-web-visualizer-realtime-channel.md).
 
 ```json
 {
@@ -81,3 +81,4 @@ related_test_cases: [TC-WEB-VISUALIZER-01]
 |---|---|---|---|
 | 1.0 | 2026-10-03 | Codex | Начальная спецификация веб-визуализатора. |
 | 1.1 | 2026-10-03 | Codex | Добавлены анонимный read-only режим, fullscreen и точный масштаб монет. |
+| 1.2 | 2026-10-03 | Codex | Основной канал состояния/управления переведён на отдельный realtime-дизайн FE-026. |

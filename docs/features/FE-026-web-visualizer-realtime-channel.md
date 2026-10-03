@@ -1,0 +1,119 @@
+---
+id: FE-026
+title: "Realtime-канал веб-визуализатора"
+module: "apps/arena-hub и lib/arena-server::visualizer-stream"
+author: "Codex"
+created_at: "2026-10-03"
+updated_at: "2026-10-03"
+status: "approved"
+version: 1.0
+tags: [websocket, realtime, visualization, manual-control, performance]
+related_domain_records: [DR-014, DR-013, DR-001]
+related_test_cases: [TC-WEB-VISUALIZER-REALTIME-01]
+---
+
+# FE-026: Realtime-канал веб-визуализатора
+
+## 1. Контекст и цель
+
+Браузерная арена сейчас использует синхронный цикл HTTP polling: каждые 200 мс Hub проксирует запрос в arena server, тот применяет ввод и только затем отдаёт полный снимок. Медленный ответ задерживает получение состояния и команд, вызывает таймауты и делает управление рваным. Требуется отдельный канал только для `/arena`; контракт игрового REST API для ботов не меняется.
+
+## 2. Архитектурное решение
+
+- Hub выдаёт краткоживущий одноразовый realtime-ticket через POST с `X-Auth-Token`; для наблюдателя тот же endpoint выдаёт read-only ticket. Реальный командный токен не попадает в URL, WebSocket payload или subprotocol.
+- Клиент открывает WebSocket напрямую к активной арене и передаёт ticket в `Sec-WebSocket-Protocol` как одноразовую capability. Arena обменивает его у Hub по внутреннему endpoint, защищённому `ARENA_CONTROL_TOKEN`; ticket одноразовый и живёт не более 10 секунд.
+- Arena публикует снапшот через `watch<Arc<WorldSnapshot>>`: медленный читатель получает актуальное состояние, пропуская промежуточные версии, без растущей очереди и задержки игрового цикла.
+- Поток снапшотов отправляет текущий Desert DTO сразу после подключения и затем при завершении каждого тика (200 мс). Приемник не выполняет игровую симуляцию и не блокирует тик.
+- Клиент рисует через существующий `requestAnimationFrame`; сетевой обработчик лишь заменяет latest snapshot. Интерполяция сглаживает отображение, но не влияет на физику.
+- Сообщения ввода содержат только `{transports:[{id,acceleration}]}`. Arena проверяет ownership, живой статус, finite-значения и активность сессии. В пределах тика повторные realtime-команды коалесцируются: применяется последняя принятая команда ковра. REST-бот сохраняет прежний лимит одной batch-команды на тик и прежний HTTP-контракт.
+- Пока ручное управление включено, клиент продлевает существующий lease отдельным малым HTTP heartbeat раз в 500 мс; lease имеет короткий TTL. При disconnect поток закрывается, lease перестаёт обновляться и бот возвращает управление.
+- При разрыве WebSocket клиент переподключается с экспоненциальной задержкой и новым ticket. Частый HTTP polling снимков не запускается; пока канал недоступен, UI сохраняет последний кадр и показывает reconnect.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Hub
+    participant Arena
+    participant Engine
+    Browser->>Hub: POST /api/visualizer/ticket (X-Auth-Token)
+    Hub-->>Browser: ticket + wsUrl + session metadata
+    Browser->>Arena: WebSocket Upgrade (one-time ticket subprotocol)
+    Arena->>Hub: consume ticket (ARENA_CONTROL_TOKEN)
+    Hub-->>Arena: player identity / observer permission
+    Arena-->>Browser: latest Desert snapshot
+    loop every game tick
+        Engine->>Arena: latest snapshot watch changed
+        Arena-->>Browser: latest snapshot (stale versions coalesced)
+    end
+    loop while manual mode is active
+        Browser->>Arena: latest acceleration command
+        Browser->>Hub: small lease heartbeat (500 ms)
+    end
+```
+
+## 3. API-контракты и DTO
+
+### Ticket issuance
+
+`POST /api/visualizer/ticket` на Hub. Игрок обязан передать `X-Auth-Token`; неизвестный токен получает `401`. Наблюдатель отправляет пустое тело и не передаёт заголовок. Ответ включает `ticket`, `websocketUrl`, `expiresInMs`, `mode` (`player` или `observer`) и отображаемое имя. Ticket одноразовый, короткоживущий; это не пользовательский токен.
+
+### WebSocket
+
+Подпротокол: `stadmagic.v1`; одноразовая capability передаётся отдельным значением `stadmagic-ticket.<opaque-ticket>` в `Sec-WebSocket-Protocol`.
+
+Команда клиента:
+
+```json
+{"type":"commands","transports":[{"id":"team_0","acceleration":{"x":12,"y":-8}}]}
+```
+
+Серверное сообщение:
+
+```json
+{"type":"snapshot","tick":42,"state":{"mapSize":{"x":10000,"y":10000},"transports":[],"enemies":[],"bounties":[],"anomalies":[]}}
+```
+
+`state` сохраняет Desert DTO без изменений. Observer может только получать snapshots. Ограничение размера входного сообщения — 16 KiB; некорректные и неавторизованные команды отклоняются без закрытия всей сессии, если протокол позволяет продолжить безопасно.
+
+### Lease heartbeat
+
+`POST /api/visualizer/lease` на Hub, `X-Auth-Token`, body `{carpetId,leaseId}` для продления; `{releaseLeaseId}` для освобождения. Не проксирует игровой API и не возвращает snapshot. Наблюдателю endpoint запрещён. Текущий `/api/visualizer/move` остаётся для совместимости и не меняет публичный игровой API.
+
+## 4. Алгоритмы и ограничения
+
+- Watch channel — capacity 1 / latest-value semantics; медленный WebSocket consumer не накапливает устаревшие снимки.
+- Реaltime-ввод записывается в существующий буфер следующего тика и заменяется последним WebSocket-вводом того же тика. HTTP-контракт ботов и ограничение REST rate-limit сохраняются.
+- Hub очищает истёкшие и consumed tickets; ticket связан с конкретной ареной/run ID, чтобы его нельзя было применить после ротации мира.
+- Соединение закрывается при смене/завершении арены; клиент получает новый ticket для следующего run.
+- Heartbeat ручного lease отделён от потока команд; он не ждёт рендер-снимка.
+
+## 5. Обработка ошибок
+
+| Ситуация | Поведение |
+|---|---|
+| Неизвестный токен при выдаче ticket | `401`, соединение не создаётся |
+| Ticket истёк, использован или выдан для старого run | handshake отклоняется; клиент получает новый ticket |
+| Observer прислал управляющую команду | команда отклоняется, соединение остаётся read-only |
+| Сессия/арена завершилась | WebSocket закрывается с кодом нормального завершения, UI переподключается к новой арене |
+| Сеть медленнее тика | устаревшие снимки заменяются свежим; отправка/рендер не ждёт очередь |
+| WebSocket недоступен | backoff reconnect; UI сохраняет последний кадр и сообщает о reconnect |
+
+## 6. План реализации
+
+- [x] Описать отдельный realtime-контракт для браузерного клиента, не меняя REST API ботов.
+- [x] Реализовать Hub ticket issuance/consume и lease heartbeat.
+- [x] Реализовать watch-снимок и WebSocket маршрут в arena server.
+- [x] Перевести веб-визуализатор с частого request-response polling на realtime snapshot/commands.
+- [x] Проверить ownership, observer read-only, ticket replay/expiry и коалесценцию ввода unit-тестами; browser reconnect проверяется вручную.
+
+## 7. Тестирование
+
+- Hub unit tests: ticket issuance, token header enforcement, observer read-only, одноразовое consume, expiry/run binding, lease renewal/release.
+- Arena unit/integration tests: ticket failure, ownership validation, snapshot delivery, repeated realtime command coalescing, unchanged REST one-batch-per-tick behavior.
+- Browser tests/manual acceptance: frame loop remains active under delayed network; no overlapping snapshot polling; commands remain latest-value; recovery after WS disconnect and world rotation.
+
+## История изменений
+
+| Версия | Дата | Автор | Изменение |
+|---|---|---|---|
+| 1.0 | 2026-10-03 | Codex | Спецификация и реализация realtime-канала веб-визуализатора. |

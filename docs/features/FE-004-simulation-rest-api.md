@@ -51,7 +51,7 @@ Content-Type: application/json
 
 ## 6. Критерии приемки
 
-- [x] Работает единственный игровой endpoint `POST /play/magcarp/player/move`.
+- [x] Игровой REST-контракт для ботов состоит из endpoint `POST /play/magcarp/player/move`; отдельный WebSocket веб-визуализатора не меняет и не заменяет этот API (см. FE-026).
 - [x] Endpoint возвращает контракт Desert с полным состоянием мира и флота.
 - [x] Неизвестный и отсутствующий токен даёт `401`.
 - [x] Внутренний observer token возвращает весь мир read-only и не создаёт состояние игрока.

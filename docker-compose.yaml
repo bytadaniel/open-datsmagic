@@ -42,6 +42,8 @@ services:
       ARENA_CONTROL_PORT: 9001
       ARENA_GAME_HOST: 0.0.0.0
       ARENA_GAME_PORT: 8080
+      DATS_HUB_INTERNAL_URL: http://hub:8090
+      DATS_HUB_CONTROL_TOKEN: ${ARENA_CONTROL_TOKEN:?Set ARENA_CONTROL_TOKEN in .env}
       HUB_DATA_DIR: /app/data
       DATS_WORLDS_PATH: /app/assets/worlds.json
     ports:

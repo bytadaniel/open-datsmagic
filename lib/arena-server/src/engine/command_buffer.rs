@@ -133,6 +133,31 @@ impl InputCommandBuffer {
         Ok(count)
     }
 
+    /// Realtime-ввод браузера: несколько обновлений за тик заменяют предыдущие.
+    /// Игровой REST API продолжает использовать `register_batch_commands` и его лимит.
+    pub fn register_realtime_batch_commands(
+        &mut self,
+        player_id: PlayerId,
+        commands: Vec<(String, PlayerCommand)>,
+    ) -> Result<usize, CommandError> {
+        if commands.is_empty() {
+            return Ok(0);
+        }
+        for (carpet_id, command) in &commands {
+            if !command.is_valid() {
+                return Err(CommandError::InvalidCommand(format!(
+                    "Координаты ускорения для ковра {carpet_id} должны быть конечными числами"
+                )));
+            }
+        }
+        self.submitted_players.insert(player_id);
+        let count = commands.len();
+        for (carpet_id, command) in commands {
+            self.pending_commands.insert(carpet_id, command);
+        }
+        Ok(count)
+    }
+
     /// Атомарно извлекает накопленные за текущий тик команды и опустошает внутренний буфер
     /// с помощью [`std::mem::take`] для начала накопления команд следующего тика.
     pub fn drain_commands(&mut self) -> HashMap<String, PlayerCommand> {
@@ -257,5 +282,33 @@ mod tests {
             Some(&PlayerCommand::new(1.0, 2.0))
         );
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn realtime_updates_coalesce_without_changing_rest_rate_limit() {
+        let mut buffer = InputCommandBuffer::new();
+        buffer
+            .register_realtime_batch_commands(
+                "team".into(),
+                vec![("team_0".into(), PlayerCommand::new(1.0, 0.0))],
+            )
+            .unwrap();
+        buffer
+            .register_realtime_batch_commands(
+                "team".into(),
+                vec![("team_0".into(), PlayerCommand::new(0.0, 1.0))],
+            )
+            .unwrap();
+        assert_eq!(
+            buffer.pending_commands.get("team_0"),
+            Some(&PlayerCommand::new(0.0, 1.0))
+        );
+        assert_eq!(
+            buffer.register_batch_commands(
+                "team".into(),
+                vec![("team_1".into(), PlayerCommand::new(1.0, 1.0))]
+            ),
+            Err(CommandError::AlreadySubmitted)
+        );
     }
 }
