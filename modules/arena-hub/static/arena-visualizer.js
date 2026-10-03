@@ -930,13 +930,30 @@
     state.leaseTimer = setInterval(() => renewLease().catch(() => {}), 500);
   }
 
+  function sendNeutralManualCommand() {
+    const selected = byId(state.current, state.selectedId);
+    if (!selected?.own || state.realtime?.readyState !== WebSocket.OPEN) return false;
+    try {
+      state.realtime.send(JSON.stringify({ type: 'commands', transports: [{ id: selected.id, acceleration: { x: 0, y: 0 } }] }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function disableManual(release) {
+    const leaseId = state.leaseId;
+    if (release && leaseId) {
+      // Physics keeps the last acceleration when a tick has no command.
+      // Clear it before returning this carpet to the bot.
+      sendNeutralManualCommand();
+      renewLease(leaseId).catch(() => {});
+    }
     state.manual = false;
     touchStick.classList.remove('active');
     state.stickVector = null;
     if (state.leaseTimer) clearInterval(state.leaseTimer);
     state.leaseTimer = 0;
-    if (release && state.leaseId) renewLease(state.leaseId).catch(() => {});
     state.leaseId = '';
     manualButton.textContent = 'Ручное';
     manualButton.classList.remove('manual-on');
@@ -953,6 +970,7 @@
 
   function connect(token, observer) {
     const previousToken = state.token, previousLease = state.leaseId;
+    if (previousToken && previousLease) sendNeutralManualCommand();
     disableManual(false);
     if (previousToken && previousLease) {
       fetch('/api/visualizer/lease', { method: 'POST', keepalive: true,
@@ -1175,6 +1193,7 @@
   connect(rememberedProfile.token, !rememberedProfile.token);
   window.addEventListener('pagehide', () => {
     if (state.token && state.leaseId) {
+      sendNeutralManualCommand();
       fetch('/api/visualizer/lease', { method: 'POST', keepalive: true,
         headers: { 'Content-Type': 'application/json', 'X-Auth-Token': state.token },
         body: JSON.stringify({ releaseLeaseId: state.leaseId }) }).catch(() => {});

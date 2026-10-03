@@ -446,3 +446,4 @@ details.disclosure-closing>.disclosure-content{grid-template-rows:0fr!important;
 /* Align the map edge with the other full-width arena sections. */
 .visualizer-shell{width:100%;max-width:none}
 .visualizer-stage,.visualizer-stage:hover{width:100%;box-sizing:border-box;padding:0}
+.visualizer-layout{margin-bottom:28px}
