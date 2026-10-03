@@ -1063,8 +1063,10 @@
   });
 
   function fullscreenActive() {
-    return document.fullscreenElement === shell || document.webkitFullscreenElement === shell
-      || shell.classList.contains('fullscreen-fallback');
+    return nativeFullscreenActive() || shell.classList.contains('fullscreen-fallback');
+  }
+  function nativeFullscreenActive() {
+    return document.fullscreenElement === shell || document.webkitFullscreenElement === shell;
   }
   function syncFullscreenButton() {
     const active = fullscreenActive();
@@ -1082,15 +1084,20 @@
     orientationButton.title = landscape ? 'Переключить экран в портретную ориентацию' : 'Переключить экран в альбомную ориентацию';
   }
   fullscreenButton.addEventListener('click', async () => {
-    try {
-      if (fullscreenActive()) {
+    if (nativeFullscreenActive()) {
+      try {
         if (document.exitFullscreen) await document.exitFullscreen();
         else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-        shell.classList.remove('fullscreen-fallback');
-      } else if (shell.requestFullscreen) await shell.requestFullscreen();
-      else if (shell.webkitRequestFullscreen) shell.webkitRequestFullscreen();
-      else shell.classList.add('fullscreen-fallback');
-    } catch (_) { shell.classList.toggle('fullscreen-fallback'); }
+      } catch (_) { return; }
+    } else if (shell.classList.contains('fullscreen-fallback')) {
+      shell.classList.remove('fullscreen-fallback');
+    } else {
+      try {
+        if (shell.requestFullscreen) await shell.requestFullscreen();
+        else if (shell.webkitRequestFullscreen) shell.webkitRequestFullscreen();
+        else shell.classList.add('fullscreen-fallback');
+      } catch (_) { shell.classList.add('fullscreen-fallback'); }
+    }
     syncFullscreenButton();
     setTimeout(resize, 100);
   });
