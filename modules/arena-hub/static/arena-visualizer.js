@@ -31,6 +31,7 @@
     pointers: new Map(), gestureDistance: 0, dragging: false, dragStart: null,
     realtime: null, connecting: false, reconnectDelay: 250, commandTimer: 0, leaseTimer: 0,
     arenaSeconds: null, arenaDeadline: 0, trajectoryCacheKey: '', trajectoryCache: null,
+    routeSegments: [], activeRouteSegment: 0, routeStartedAt: 0,
     historyCarpetId: '', historyTrail: [], collectedMarkers: [],
     physics: { dt: 0.2, friction: 0.98 },
   };
@@ -422,6 +423,16 @@
     return { x: state.camera.x + (position.x - state.width / 2) / factor,
       y: state.camera.y - (position.y - state.height / 2) / factor };
   }
+  function visibleWorldBounds(padding = 0) {
+    const a = screenToWorld({ x: -padding, y: -padding });
+    const b = screenToWorld({ x: state.width + padding, y: state.height + padding });
+    return { minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x),
+      minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y) };
+  }
+  function circleVisibleOnCanvas(point, radius) {
+    return point.x + radius >= 0 && point.x - radius <= state.width
+      && point.y + radius >= 0 && point.y - radius <= state.height;
+  }
   function moveCamera(dx, dy) {
     const factor = scale();
     state.camera.x += dx / factor;
@@ -513,6 +524,7 @@
       const color = attracting ? '#e34850' : '#287bd4';
       const fieldRadius = Math.max(3, finite(anomaly.effectiveRadius) * scale());
       const coreRadius = Math.max(3.5, finite(anomaly.radius) * scale());
+      if (!circleVisibleOnCanvas(center, fieldRadius)) continue;
       ctx.fillStyle = attracting ? 'rgba(224,55,66,.105)' : 'rgba(35,112,210,.11)';
       ctx.beginPath(); ctx.arc(center.x, center.y, fieldRadius, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = color; ctx.beginPath(); ctx.arc(center.x, center.y, coreRadius, 0, Math.PI * 2); ctx.fill();
@@ -526,6 +538,7 @@
     const radius = Math.max(4, Math.min(9, finite(snapshot.transportRadius) * scale()));
     for (const carpet of carpets) {
       const center = worldToScreen(carpet);
+      if (!circleVisibleOnCanvas(center, radius + (carpet.id === state.selectedId ? 70 : 10))) continue;
       const isSelected = carpet.id === state.selectedId;
       const palette = carpet.own ? { body: '#f2c64d', aura: 'rgba(245,193,67,.22)' } : teamColor(carpet.teamId);
       ctx.fillStyle = palette.aura;
@@ -553,7 +566,7 @@
   function accelerationFor(carpet, snapshot) {
     if (state.stickVector) return state.stickVector;
     if (!state.pointer || !state.pointerInside) return null;
-    const center = worldToScreen(carpet);
+    const center = worldToScreen(state.routeSegments.at(-1)?.end || carpet);
     let x = state.pointer.x - center.x;
     let y = center.y - state.pointer.y;
     const magnitude = Math.hypot(x, y), maximum = Math.max(0, finite(snapshot.maxAccel));
@@ -565,7 +578,7 @@
     if (!state.manual || !state.selectedId) return;
     const carpet = byId(snapshot, state.selectedId);
     if (!carpet?.own || !alive(carpet)) return;
-    const center = worldToScreen(carpet);
+    const center = worldToScreen(state.routeSegments.at(-1)?.end || carpet);
     if (state.pointer && state.pointerInside && !state.stickVector) {
       ctx.strokeStyle = '#687782'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
       ctx.beginPath(); ctx.moveTo(center.x, center.y); ctx.lineTo(state.pointer.x, state.pointer.y); ctx.stroke(); ctx.setLineDash([]);
@@ -615,30 +628,57 @@
     const carpet = byId(snapshot, state.selectedId);
     if (!carpet || !alive(carpet)) return null;
     const manualVector = state.manual ? accelerationFor(carpet, snapshot) : null;
-    const cacheKey = `${state.receivedAt}:${state.selectedId}:${state.manual}:${finite(manualVector?.x).toFixed(2)}:${finite(manualVector?.y).toFixed(2)}`;
+    const cacheKey = `${state.receivedAt}:${state.selectedId}:${state.manual}:${state.routeSegments.length}:${finite(manualVector?.x).toFixed(2)}:${finite(manualVector?.y).toFixed(2)}`;
     if (cacheKey === state.trajectoryCacheKey) return state.trajectoryCache;
-    const dt = Math.max(state.physics.dt, 0.5), horizon = 20, count = Math.ceil(horizon / dt);
-    const maxAccel = Math.max(0, finite(snapshot.maxAccel));
-    const maxSpeed = Math.max(0, finite(snapshot.maxSpeed));
+    if (state.routeSegments.length) {
+      const fixed = state.routeSegments.flatMap((segment, index) => index ? segment.points.slice(1) : segment.points);
+      const tail = state.routeSegments.at(-1), acceleration = manualVector || tail.acceleration;
+      const planElapsed = Math.max(0, (performance.now() - state.routeStartedAt) / 1000);
+      const preview = simulateTrajectory(snapshot, carpet, { position: tail.end, velocity: tail.velocity,
+        startTime: tail.endTime, environmentOffset: Math.max(0, tail.endTime - planElapsed), acceleration, horizon: 20 });
+      const points = [...fixed, ...preview.slice(1)];
+      state.trajectoryCacheKey = cacheKey; state.trajectoryCache = points;
+      return points;
+    }
     const command = carpet.own
       ? (state.manual && carpet.id === state.selectedId ? manualVector || carpet.selfAcceleration : carpet.selfAcceleration)
       : { x: 0, y: 0 };
-    const acceleration = clampLength({ x: finite(command?.x), y: finite(command?.y) }, maxAccel);
+    const points = simulateTrajectory(snapshot, carpet, { position: { x: finite(carpet.x), y: finite(carpet.y) },
+      velocity: { x: finite(carpet.velocity?.x), y: finite(carpet.velocity?.y) }, startTime: 0,
+      acceleration: command, horizon: 20 });
+    state.trajectoryCacheKey = cacheKey;
+    state.trajectoryCache = points;
+    return points;
+  }
+
+  function simulateTrajectory(snapshot, carpet, options) {
+    const tickDuration = Math.max(.05, state.physics.dt), startTime = Math.max(0, finite(options.startTime));
+    const environmentOffset = Math.max(0, finite(options.environmentOffset ?? startTime));
+    const horizon = Math.max(tickDuration, finite(options.horizon, 20)), count = Math.ceil(horizon / tickDuration);
+    const maxAccel = Math.max(0, finite(snapshot.maxAccel));
+    const maxSpeed = Math.max(0, finite(snapshot.maxSpeed));
+    const acceleration = clampLength({ x: finite(options.acceleration?.x), y: finite(options.acceleration?.y) }, maxAccel);
     const radius = Math.max(0, finite(snapshot.transportRadius));
     const map = mapSize(snapshot);
-    let position = { x: finite(carpet.x), y: finite(carpet.y) };
-    let velocity = { x: finite(carpet.velocity?.x), y: finite(carpet.velocity?.y) };
-    let anomalies = (snapshot.anomalies || []).map(item => ({ ...item, x: finite(item.x), y: finite(item.y) }));
-    const points = [];
-    for (let step = 0; step < count; step++) {
+    const collisionTargets = allCarpets(snapshot).filter(item => item.id !== carpet.id && alive(item));
+    let position = { x: finite(options.position?.x), y: finite(options.position?.y) };
+    let velocity = { x: finite(options.velocity?.x), y: finite(options.velocity?.y) };
+    let anomalies = (snapshot.anomalies || []).map(item => ({ ...item,
+      x: finite(item.x) + finite(item.velocity?.x) * environmentOffset,
+      y: finite(item.y) + finite(item.velocity?.y) * environmentOffset,
+    })).filter(item => !anomalyDespawned(item, map));
+    const points = [{ x: position.x, y: position.y, time: startTime, velocity: { ...velocity } }];
+    let elapsed = 0;
+    for (let step = 0; step < count && elapsed < horizon; step++) {
+      const dt = Math.min(tickDuration, horizon - elapsed);
       const nextAnomalies = anomalies.map(item => ({ ...item,
         x: item.x + finite(item.velocity?.x) * dt,
         y: item.y + finite(item.velocity?.y) * dt,
       }));
       const external = anomalyForceAt(position, anomalies);
       const nextVelocity = clampLength({
-        x: velocity.x * state.physics.friction + (acceleration.x + external.x) * dt,
-        y: velocity.y * state.physics.friction + (acceleration.y + external.y) * dt,
+        x: velocity.x * Math.pow(state.physics.friction, dt / tickDuration) + (acceleration.x + external.x) * dt,
+        y: velocity.y * Math.pow(state.physics.friction, dt / tickDuration) + (acceleration.y + external.y) * dt,
       }, maxSpeed);
       const nextPosition = { x: position.x + nextVelocity.x * dt, y: position.y + nextVelocity.y * dt };
       let terminal = null, terminalRatio = 1;
@@ -649,37 +689,58 @@
         const hit = segmentCircleEntry(relativeFrom, relativeTo, Math.max(0, finite(anomaly.radius)) + radius);
         if (hit !== null && hit < terminalRatio) { terminal = 'core'; terminalRatio = hit; }
       }
+      for (const other of collisionTargets) {
+        const otherStart = { x: finite(other.x) + finite(other.velocity?.x) * (environmentOffset + elapsed),
+          y: finite(other.y) + finite(other.velocity?.y) * (environmentOffset + elapsed) };
+        const otherEnd = { x: finite(other.x) + finite(other.velocity?.x) * (environmentOffset + elapsed + dt),
+          y: finite(other.y) + finite(other.velocity?.y) * (environmentOffset + elapsed + dt) };
+        const relativeFrom = { x: position.x - otherStart.x, y: position.y - otherStart.y };
+        const relativeTo = { x: nextPosition.x - otherEnd.x, y: nextPosition.y - otherEnd.y };
+        const hit = segmentCircleEntry(relativeFrom, relativeTo, radius * 2);
+        if (hit !== null && hit < terminalRatio) {
+          terminal = 'carpet'; terminalRatio = hit;
+        }
+      }
       const dx = nextPosition.x - position.x, dy = nextPosition.y - position.y;
       const mapEdgeRatio = (coordinate, delta, limit) => delta < 0 && coordinate + delta < 0 ? (0 - coordinate) / delta
         : delta > 0 && coordinate + delta > limit ? (limit - coordinate) / delta : 1;
       const edgeRatio = Math.min(mapEdgeRatio(position.x, dx, map.x), mapEdgeRatio(position.y, dy, map.y));
       if (edgeRatio < terminalRatio) { terminal = 'edge'; terminalRatio = edgeRatio; }
       if (terminal) {
-        points.push({ x: position.x + dx * terminalRatio, y: position.y + dy * terminalRatio, terminal });
+        points.push({ x: position.x + dx * terminalRatio, y: position.y + dy * terminalRatio,
+          time: startTime + elapsed + dt * terminalRatio, velocity: { x: velocity.x + (nextVelocity.x - velocity.x) * terminalRatio,
+            y: velocity.y + (nextVelocity.y - velocity.y) * terminalRatio }, terminal });
         break;
       }
       position = nextPosition;
       velocity = nextVelocity;
       anomalies = nextAnomalies.filter(item => !anomalyDespawned(item, map));
-      points.push(position);
+      elapsed += dt;
+      points.push({ x: position.x, y: position.y, time: startTime + elapsed, velocity: { ...velocity } });
     }
-    state.trajectoryCacheKey = cacheKey;
-    state.trajectoryCache = points;
     return points;
   }
 
   function drawSelectedTrajectory(ctx, snapshot) {
     const points = predictSelectedTrajectory(snapshot);
     if (!points?.length) return;
-    const screenPoints = points.map(worldToScreen);
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 2.2;
-    ctx.strokeStyle = 'rgba(0, 103, 112, .72)';
-    ctx.beginPath();
-    const start = worldToScreen(byId(snapshot, state.selectedId));
-    ctx.moveTo(start.x, start.y);
-    for (const point of screenPoints) ctx.lineTo(point.x, point.y);
-    ctx.stroke();
+    let fixedPointCount = 0;
+    for (const segment of state.routeSegments) {
+      const fixed = segment.points.map(worldToScreen);
+      fixedPointCount += segment.points.length - 1;
+      ctx.strokeStyle = 'rgba(194, 140, 36, .9)'; ctx.lineWidth = 3;
+      ctx.beginPath(); fixed.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)); ctx.stroke();
+      const anchor = worldToScreen(segment.end);
+      ctx.fillStyle = '#f2c64d'; ctx.strokeStyle = '#75500e'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    const previewStart = Math.min(fixedPointCount, points.length - 1);
+    const screenPoints = points.slice(previewStart).map(worldToScreen);
+    if (!state.routeSegments.length) screenPoints.unshift(worldToScreen(byId(snapshot, state.selectedId)));
+    ctx.strokeStyle = 'rgba(0, 103, 112, .76)'; ctx.lineWidth = 2.2;
+    ctx.beginPath(); screenPoints.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)); ctx.stroke();
     for (let index = 1; index < screenPoints.length; index += 2) {
       const point = screenPoints[index], remaining = 1 - index / screenPoints.length;
       const radius = 1.5 + remaining * 0.65;
@@ -688,12 +749,193 @@
       ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2); ctx.fill();
     }
     const terminal = points.at(-1);
-    if (terminal?.terminal === 'core') {
+    if (terminal?.terminal) {
       const point = screenPoints.at(-1);
-      ctx.globalAlpha = 0.82; ctx.fillStyle = '#df5d62';
-      ctx.beginPath(); ctx.arc(point.x, point.y, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.9; ctx.strokeStyle = '#df424d'; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(point.x - 4, point.y - 4); ctx.lineTo(point.x + 4, point.y + 4);
+      ctx.moveTo(point.x + 4, point.y - 4); ctx.lineTo(point.x - 4, point.y + 4); ctx.stroke();
     }
     ctx.restore();
+  }
+
+  function routeStart(snapshot, carpet) {
+    const tail = state.routeSegments.at(-1);
+    return tail
+      ? { position: { ...tail.end }, velocity: { ...tail.velocity }, startTime: tail.endTime }
+      : { position: { x: finite(carpet.x), y: finite(carpet.y) },
+        velocity: { x: finite(carpet.velocity?.x), y: finite(carpet.velocity?.y) }, startTime: 0 };
+  }
+
+  function routeNotice(text) { message.textContent = text; message.className = 'viz-message'; }
+
+  function pinRouteSegment() {
+    const carpet = byId(state.current, state.selectedId);
+    if (!state.manual || !carpet?.own || !alive(carpet)) return;
+    const command = accelerationFor(carpet, state.current);
+    if (!command || Math.hypot(command.x, command.y) < 1e-6) {
+      routeNotice('Наведи прицел через монету, затем нажми F или среднюю кнопку мыши.'); return;
+    }
+    const start = routeStart(state.current, carpet);
+    const elapsed = state.routeStartedAt ? Math.max(0, (performance.now() - state.routeStartedAt) / 1000) : 0;
+    const points = simulateTrajectory(state.current, carpet, { ...start,
+      environmentOffset: Math.max(0, start.startTime - elapsed), acceleration: command, horizon: 20 });
+    const pickupRadius = Math.max(0, finite(state.current.transportRadius));
+    const alreadyQueued = new Set(state.routeSegments.map(segment => segment.coinKey));
+    let hit = null;
+    for (let index = 1; index < points.length; index++) {
+      const from = points[index - 1], to = points[index];
+      for (const coin of state.current.bounties || []) {
+        // The next leg starts inside the previous waypoint's pickup circle;
+        // never let that same bounty become the new leg's zero-time endpoint.
+        if (alreadyQueued.has(coinKey(coin))) continue;
+        const fraction = segmentCircleEntry({ x: from.x - finite(coin.x), y: from.y - finite(coin.y) },
+          { x: to.x - finite(coin.x), y: to.y - finite(coin.y) }, pickupRadius + Math.max(0, finite(coin.radius)));
+        if (fraction === null) continue;
+        const time = from.time + (to.time - from.time) * fraction;
+        if (!hit || time < hit.time) hit = { coin, fraction, time, index, from, to };
+      }
+    }
+    if (!hit) { routeNotice('Прогноз не пересекает монеты — измени прицел.'); return; }
+    const endpoint = { x: hit.from.x + (hit.to.x - hit.from.x) * hit.fraction,
+      y: hit.from.y + (hit.to.y - hit.from.y) * hit.fraction };
+    const endVelocity = { x: finite(hit.from.velocity?.x) + (finite(hit.to.velocity?.x) - finite(hit.from.velocity?.x)) * hit.fraction,
+      y: finite(hit.from.velocity?.y) + (finite(hit.to.velocity?.y) - finite(hit.from.velocity?.y)) * hit.fraction };
+    const segmentPoints = points.slice(0, hit.index);
+    segmentPoints.push({ ...endpoint, time: hit.time, velocity: endVelocity });
+    state.routeSegments.push({ points: segmentPoints, end: endpoint, velocity: endVelocity, endTime: hit.time,
+      coinKey: coinKey(hit.coin), coinValue: finite(hit.coin.points), acceleration: clampLength(command, finite(state.current.maxAccel)) });
+    if (state.routeSegments.length === 1) { state.activeRouteSegment = 0; state.routeStartedAt = performance.now(); }
+    state.trajectoryCacheKey = '';
+    routeNotice(`Сегмент ${state.routeSegments.length} закреплён до монеты ${formatCompactGold(hit.coin.points)} · ~${Math.max(0, hit.time - start.startTime).toFixed(1)} с. Z / правая кнопка — undo.`);
+  }
+
+  function undoRouteSegment() {
+    if (!state.routeSegments.length) return;
+    state.routeSegments.pop();
+    state.activeRouteSegment = Math.min(state.activeRouteSegment, Math.max(0, state.routeSegments.length - 1));
+    if (!state.routeSegments.length) { state.activeRouteSegment = 0; state.routeStartedAt = 0; }
+    state.trajectoryCacheKey = '';
+    routeNotice(state.routeSegments.length ? `Осталось сегментов: ${state.routeSegments.length}.` : 'План очищен; прицел снова управляет сразу.');
+  }
+
+  function advanceRoutePlan(carpet, snapshot) {
+    const index = state.activeRouteSegment, current = state.routeSegments[index];
+    if (!current || !state.previous) return;
+    const oldCarpet = byId(state.previous, carpet.id);
+    if (!oldCarpet) return;
+    const oldCoin = (state.previous.bounties || []).find(coin => coinKey(coin) === current.coinKey);
+    const targetExists = (snapshot.bounties || []).some(coin => coinKey(coin) === current.coinKey);
+    if (!oldCoin) return;
+
+    // Use the actual swept path, not the forecast endpoint: it is possible to
+    // pass a missed coin while the planned waypoint remains behind us.
+    const selectedDistance = distanceToSegment(oldCoin, oldCarpet, carpet);
+    const pickupRadius = Math.max(0, finite(snapshot.transportRadius)) + Math.max(0, finite(oldCoin.radius));
+    if (targetExists) {
+      if (selectedDistance <= pickupRadius) {
+        clearRoutePlan('Ковер прошёл waypoint, но монета осталась — цепочка сброшена. Теперь ускорение задаёт прицел.');
+      }
+      return;
+    }
+    const nearestDistance = nearestCarpetDistanceToCoin(state.previous, snapshot, oldCoin);
+    if (selectedDistance > pickupRadius || nearestDistance.carpetId !== carpet.id) {
+      clearRoutePlan('Целевая монета исчезла, но её собрал не выбранный ковер — план сброшен. Веди прицелом.');
+      return;
+    }
+
+    if (index >= state.routeSegments.length - 1) {
+      clearRoutePlan('Монета собрана. План завершён — продолжай вести ковер прицелом.');
+      return;
+    }
+    if (!rebuildRemainingRoute(carpet, snapshot, index + 1)) {
+      clearRoutePlan('Маршрут после сбора больше не проходит через цель — план сброшен. Веди прицелом.');
+      return;
+    }
+    routeNotice(`Монета собрана точно по фактическому движению. Следующий сегмент ${state.activeRouteSegment + 1}/${state.routeSegments.length} пересчитан от ковра.`);
+  }
+
+  function rebuildRemainingRoute(carpet, snapshot, firstIndex) {
+    const pending = state.routeSegments.slice(firstIndex);
+    let position = { x: finite(carpet.x), y: finite(carpet.y) };
+    let velocity = { x: finite(carpet.velocity?.x), y: finite(carpet.velocity?.y) };
+    let elapsed = 0;
+    const rebuilt = [];
+    for (const oldSegment of pending) {
+      const coin = (snapshot.bounties || []).find(item => coinKey(item) === oldSegment.coinKey);
+      if (!coin) return false;
+      const points = simulateTrajectory(snapshot, carpet, { position, velocity,
+        startTime: elapsed, environmentOffset: elapsed, acceleration: oldSegment.acceleration, horizon: 20 });
+      const hit = firstCoinHit(points, coin, snapshot.transportRadius);
+      if (!hit) return false;
+      const endpoint = { x: hit.from.x + (hit.to.x - hit.from.x) * hit.fraction,
+        y: hit.from.y + (hit.to.y - hit.from.y) * hit.fraction };
+      const endVelocity = { x: finite(hit.from.velocity?.x) + (finite(hit.to.velocity?.x) - finite(hit.from.velocity?.x)) * hit.fraction,
+        y: finite(hit.from.velocity?.y) + (finite(hit.to.velocity?.y) - finite(hit.from.velocity?.y)) * hit.fraction };
+      const segmentPoints = points.slice(0, hit.index);
+      segmentPoints.push({ ...endpoint, time: hit.time, velocity: endVelocity });
+      rebuilt.push({ ...oldSegment, points: segmentPoints, end: endpoint, velocity: endVelocity, endTime: hit.time });
+      position = endpoint; velocity = endVelocity; elapsed = hit.time;
+    }
+    state.routeSegments = rebuilt;
+    state.activeRouteSegment = 0;
+    state.routeStartedAt = performance.now();
+    state.trajectoryCacheKey = '';
+    return rebuilt.length > 0;
+  }
+
+  function firstCoinHit(points, coin, carpetRadius) {
+    const pickupRadius = Math.max(0, finite(carpetRadius)) + Math.max(0, finite(coin.radius));
+    for (let index = 1; index < points.length; index++) {
+      const from = points[index - 1], to = points[index];
+      const fraction = segmentCircleEntry({ x: from.x - finite(coin.x), y: from.y - finite(coin.y) },
+        { x: to.x - finite(coin.x), y: to.y - finite(coin.y) }, pickupRadius);
+      if (fraction !== null) return { coin, fraction, time: from.time + (to.time - from.time) * fraction,
+        index, from, to };
+    }
+    return null;
+  }
+
+  function nearestCarpetDistanceToCoin(previous, snapshot, coin) {
+    let nearest = { carpetId: '', distance: Infinity };
+    for (const current of allCarpets(snapshot)) {
+      if (!alive(current)) continue;
+      const before = byId(previous, current.id);
+      if (!before || !alive(before)) continue;
+      const distance = distanceToSegment(coin, before, current);
+      if (distance < nearest.distance) nearest = { carpetId: current.id, distance };
+    }
+    return nearest;
+  }
+
+  function routePositionAt(points, time) {
+    for (let index = 1; index < points.length; index++) {
+      const from = points[index - 1], to = points[index];
+      if (time < from.time || time > to.time || to.time <= from.time) continue;
+      const fraction = (time - from.time) / (to.time - from.time);
+      return { x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction };
+    }
+    return null;
+  }
+
+  function clearRoutePlan(reason) {
+    state.routeSegments = []; state.activeRouteSegment = 0; state.routeStartedAt = 0;
+    state.trajectoryCacheKey = '';
+    routeNotice(reason);
+  }
+
+  function routeHasDeviated(carpet, snapshot) {
+    if (!state.routeSegments.length || !state.routeStartedAt) return false;
+    const elapsed = (performance.now() - state.routeStartedAt) / 1000;
+    const predicted = routePositionAt(predictSelectedTrajectory(snapshot) || [], elapsed);
+    if (!predicted) return false;
+    const error = Math.hypot(finite(carpet.x) - predicted.x, finite(carpet.y) - predicted.y);
+    const tolerance = Math.max(4 * finite(snapshot.transportRadius), 2.5 * finite(snapshot.maxSpeed) * finite(state.physics.dt), 55);
+    return error > tolerance;
+  }
+
+  function activeRouteAcceleration(carpet, snapshot) {
+    if (!state.routeSegments.length) return accelerationFor(carpet, snapshot);
+    return state.routeSegments[Math.min(state.activeRouteSegment, state.routeSegments.length - 1)].acceleration;
   }
 
   function coinKey(coin) { return coin.id ?? `${finite(coin.x).toFixed(2)}:${finite(coin.y).toFixed(2)}`; }
@@ -761,11 +1003,7 @@
 
   function updateSelectedPanel(snapshot) {
     const item = byId(snapshot, state.selectedId);
-    const forecastNote = document.querySelector('#trajectory-note');
-    if (!item) { forecastNote.textContent = 'Выбери ковер, чтобы увидеть его путь с учётом движения аномалий.'; return; }
-    forecastNote.textContent = !alive(item) ? 'Ковер погиб — прогноз не строится.'
-      : item.own ? (state.manual ? 'Прогноз на 20 с · обновляется с новым состоянием и учитывает движение аномалий.' : 'Прогноз на 20 с · ускорение удерживается, а аномалии движутся; точки рассчитаны с шагом 0,5 с.')
-        : 'Ускорение чужого ковра скрыто API: для прогноза его собственная команда считается нулевой.';
+    if (!item || !alive(item)) return;
   }
 
   function selectCarpet(id) {
@@ -908,7 +1146,11 @@
     if (state.realtime.bufferedAmount > 4096) return;
     const selected = byId(state.current, state.selectedId);
     if (!selected?.own || !alive(selected)) { disableManual(true); return; }
-    const acceleration = accelerationFor(selected, state.current);
+    advanceRoutePlan(selected, state.current);
+    if (state.routeSegments.length && routeHasDeviated(selected, state.current)) {
+      clearRoutePlan('Маршрут сбился — план сброшен. Ручное управление продолжается прицелом.');
+    }
+    const acceleration = activeRouteAcceleration(selected, state.current);
     if (acceleration) state.realtime.send(JSON.stringify({ type: 'commands', transports: [{ id: selected.id, acceleration }] }));
   }
 
@@ -952,6 +1194,9 @@
       renewLease(leaseId).catch(() => {});
     }
     state.manual = false;
+    state.routeSegments = []; state.activeRouteSegment = 0; state.routeStartedAt = 0;
+    message.textContent = '';
+    state.trajectoryCacheKey = '';
     touchStick.classList.remove('active');
     state.stickVector = null;
     if (state.leaseTimer) clearInterval(state.leaseTimer);
@@ -967,6 +1212,7 @@
     state.leaseId = newLeaseId();
     manualButton.textContent = 'Ручное: вкл.';
     manualButton.classList.add('manual-on');
+    routeNotice('Прицел через монету: F / средняя кнопка мыши — закрепить, Z / правая — undo.');
     startLeaseHeartbeat();
   }
 
@@ -1130,6 +1376,7 @@
     const rect = canvas.getBoundingClientRect();
     zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, { x: event.clientX - rect.left, y: event.clientY - rect.top });
   }, { passive: false });
+  let touchPlanTapAt = 0, touchPlanLongPressTimer = 0, touchPlanLongPressed = false;
   canvas.addEventListener('pointermove', event => {
     const rect = canvas.getBoundingClientRect();
     const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -1150,6 +1397,14 @@
   });
   canvas.addEventListener('pointerdown', event => {
     const rect = canvas.getBoundingClientRect(), point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    if (state.manual && event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) event.preventDefault();
+    if (event.pointerType === 'touch' && state.manual) {
+      clearTimeout(touchPlanLongPressTimer);
+      touchPlanLongPressed = false;
+      if (state.pointers.size === 0) touchPlanLongPressTimer = setTimeout(() => {
+        touchPlanLongPressed = true; undoRouteSegment();
+      }, 650);
+    }
     canvas.setPointerCapture(event.pointerId);
     state.pointers.set(event.pointerId, point);
     state.dragStart = point; state.dragging = true;
@@ -1163,6 +1418,22 @@
     const start = state.dragStart;
     state.pointers.delete(event.pointerId);
     if (state.pointers.size < 2) state.gestureDistance = 0;
+    if (event.pointerType === 'touch' && state.manual) {
+      clearTimeout(touchPlanLongPressTimer);
+      if (touchPlanLongPressed) { touchPlanLongPressed = false; touchPlanTapAt = 0; }
+      else if (start && Math.hypot(point.x - start.x, point.y - start.y) < 8) {
+        const now = performance.now();
+        if (touchPlanTapAt && now - touchPlanTapAt < 360) { pinRouteSegment(); touchPlanTapAt = 0; }
+        else touchPlanTapAt = now;
+      }
+      if (!state.pointers.size) { state.dragging = false; state.dragStart = null; }
+      return;
+    }
+    if (state.manual && event.pointerType === 'mouse' && (event.button === 1 || event.button === 2)) {
+      if (event.button === 1) pinRouteSegment(); else undoRouteSegment();
+      if (!state.pointers.size) { state.dragging = false; state.dragStart = null; }
+      return;
+    }
     if (start && Math.hypot(point.x - start.x, point.y - start.y) < 8) {
       const hits = allCarpets(interpolatedState(performance.now()) || state.current).map(item => ({ item, screen: worldToScreen(item) }))
         .map(hit => ({ ...hit, distance: Math.hypot(hit.screen.x - point.x, hit.screen.y - point.y) }))
@@ -1171,8 +1442,9 @@
     }
     if (!state.pointers.size) { state.dragging = false; state.dragStart = null; }
   });
-  canvas.addEventListener('pointercancel', event => { state.pointers.delete(event.pointerId); state.dragging = false; state.gestureDistance = 0; });
-  canvas.addEventListener('pointerleave', event => { if (event.pointerType !== 'touch') state.pointerInside = false; });
+  canvas.addEventListener('pointercancel', event => { clearTimeout(touchPlanLongPressTimer); touchPlanLongPressed = false; state.pointers.delete(event.pointerId); state.dragging = false; state.gestureDistance = 0; });
+  canvas.addEventListener('pointerleave', event => { if (event.pointerType !== 'touch' && !state.manual) state.pointerInside = false; });
+  canvas.addEventListener('contextmenu', event => { if (state.manual) event.preventDefault(); });
 
   let stickPointer = null;
   touchStick.addEventListener('pointerdown', event => {
@@ -1191,12 +1463,17 @@
   }
   for (const eventName of ['pointerup', 'pointercancel', 'lostpointercapture']) touchStick.addEventListener(eventName, event => {
     if (event.pointerId !== stickPointer) return;
-    stickPointer = null; touchStick.classList.remove('active'); state.stickVector = { x: 0, y: 0 };
-    stickBase.style.setProperty('--stick-x', '0px'); stickBase.style.setProperty('--stick-y', '0px');
+    stickPointer = null; touchStick.classList.remove('active');
+    if (!state.routeSegments.length) {
+      state.stickVector = { x: 0, y: 0 };
+      stickBase.style.setProperty('--stick-x', '0px'); stickBase.style.setProperty('--stick-y', '0px');
+    }
   });
 
   window.addEventListener('keydown', event => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+    if (state.manual && event.code === 'KeyF') { event.preventDefault(); pinRouteSegment(); return; }
+    if (state.manual && event.code === 'KeyZ') { event.preventDefault(); undoRouteSegment(); return; }
     const step = 60;
     if (event.key === 'ArrowLeft') moveCamera(-step, 0);
     else if (event.key === 'ArrowRight') moveCamera(step, 0);
