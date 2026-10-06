@@ -61,20 +61,31 @@ class HubTests(unittest.TestCase):
         self.assertIn("setInterval(refreshHome,5000)", home)
         self.assertIn("setInterval(renderHomeCountdown,1000)", home)
         self.assertIn('id="home-podium-title"', home)
+        self.assertIn('id="home-podium-subtitle"', home)
         self.assertIn('data-scope="current"', home)
         self.assertIn('data-scope="all"', home)
-        self.assertIn("podiumScope='all'", home)
-        self.assertIn('data-scope="all" aria-pressed="true">За всё время', home)
+        self.assertIn('id="home-podium-meta"', home)
+        self.assertIn('id="home-top-teams"', home)
+        self.assertIn('id="home-podium-full-link"', home)
+        self.assertIn('src="/arena?mode=observer&amp;embed=1"', home)
+        self.assertIn('id="home-live-title"', home)
+        self.assertIn('class="home-arena-cta" href="/arena"', home)
         self.assertIn("/api/leaderboard?", home)
         self.assertIn("home-top-teams", home)
-        self.assertIn("podiumKilometers(value)", home)
+        self.assertIn("podiumDistance(value)", home)
         self.assertIn("пройдено, км", home)
-        self.assertIn("/leaderboard?scope=all", home)
-        self.assertIn("Пока нет команд в рейтинге", home)
-        self.assertIn('data-scope=history', leaderboard)
+        self.assertIn("podium-place-${rank}", home)
+        self.assertIn("Место свободно", home)
+        self.assertIn('data-section="history"', leaderboard)
+        self.assertIn('data-scope="last_10"', leaderboard)
+        self.assertIn('data-scope="all"', leaderboard)
+        self.assertIn('value="last_1"', leaderboard)
+        self.assertIn('value="best"', leaderboard)
+        self.assertIn("АРЕНА №", leaderboard)
+        self.assertIn("Описание мира недоступно", leaderboard)
         self.assertIn('data-run-id', leaderboard)
-        self.assertIn('<div class="leaderboard-heading">', leaderboard)
-        self.assertNotIn('<header class="leaderboard-heading">', leaderboard)
+        self.assertIn('<header class="leaderboard-heading">', leaderboard)
+        self.assertNotIn('<div class="leaderboard-heading">', leaderboard)
         self.assertIn('href="/leaderboard"', home)
         self.assertIn('href="/register"', home)
         self.assertIn('id="site-auth-dialog"', home)
@@ -97,6 +108,7 @@ class HubTests(unittest.TestCase):
         self.assertIn("StadMagic", home)
         hub_css = (Path(__file__).parent / "static" / "hub.css").read_text(encoding="utf-8")
         self.assertIn("--paper:#08111d", hub_css)
+        self.assertIn(".home-live-observer{margin-bottom:40px}", hub_css)
         self.assertIn("--space-6:32px", hub_css)
         self.assertIn(".site-header .nav-cta:hover", hub_css)
         self.assertIn(".home-podium", hub_css)
@@ -146,7 +158,7 @@ class HubTests(unittest.TestCase):
         self.assertIn('href="/docs/world"', docs)
         self.assertTrue((Path(__file__).parent.parent.parent / "docs/components/arena-hub/api.md").is_file())
         self.assertTrue((Path(__file__).parent.parent.parent / "docs/components/arena-hub/world-rules.md").is_file())
-        for label in ("Золото", "Собрано золота", "Потеряно ковров от аварий", "Пройденное расстояние"):
+        for label in ("Золото", "Собрано золота", "Золото / м"):
             self.assertIn(label, leaderboard)
         self.assertNotIn("Золота на руках", leaderboard)
         self.assertNotIn("Всего собрано золота", leaderboard)
@@ -165,6 +177,13 @@ class HubTests(unittest.TestCase):
         self.assertIn('class="arena-starter card"', page)
         self.assertIn('examples/python-starter/main.py', page)
         self.assertIn('class="disclosure-content"', page)
+        embedded = arena_visualizer_html(embed_observer=True).decode("utf-8")
+        self.assertIn('class="arena-embed-observer"', embedded)
+        self.assertIn('id="arena-canvas"', embedded)
+        self.assertNotIn('class="site-header"', embedded)
+        self.assertNotIn('id="site-auth-dialog"', embedded)
+        self.assertIn('arena-visualizer.js?v=15.0', embedded)
+        self.assertIn('arena-pilot-callout{display:none!important}', embedded)
         visualizer_script = (Path(__file__).parent / "static" / "arena-visualizer.js").read_text(encoding="utf-8")
         visualizer_css = (Path(__file__).parent / "static" / "arena-visualizer.css").read_text(encoding="utf-8")
         self.assertIn("revealArenaCanvas()", visualizer_script)
@@ -269,7 +288,7 @@ class HubTests(unittest.TestCase):
         self.assertIn("Войди через кнопку профиля", page)
         self.assertLess(page.index('class="arena-context"'), page.index('class="visualizer-top card"'))
         self.assertIn('<h1>Арена</h1>', page)
-        self.assertIn('href="/static/arena-visualizer.css?v=10.0"', page)
+        self.assertIn('href="/static/arena-visualizer.css?v=11.0"', page)
         self.assertIn(".viz-help-legend .vector-legend{grid-template-columns:repeat(3,minmax(0,1fr))", visualizer_css)
         self.assertIn(".viz-help-disclosure,.visualizer-shell .world-settings{margin:0 0 14px;padding:0 16px", visualizer_css)
         self.assertIn(".viz-help-disclosure .viz-help{gap:22px;padding:22px 0 18px}", visualizer_css)
@@ -287,14 +306,17 @@ class HubTests(unittest.TestCase):
         self.assertLess(page.index('class="world-settings"'), page.index('id="arena-leaderboard"'))
         self.assertNotIn('class="card selected-panel"', page)
         self.assertIn("Карта и ручной режим", page)
-        self.assertIn('href="/static/arena-visualizer.css?v=10.0"', page)
+        self.assertIn('href="/static/arena-visualizer.css?v=11.0"', page)
         self.assertIn('<section class="visualizer-stage">', page)
+        self.assertIn('class="arena-pilot-callout"', page)
+        self.assertIn("Закрепляй путь до золота", page)
         self.assertNotIn('<section class="visualizer-stage card">', page)
         self.assertIn("Публичный просмотр", page)
         self.assertIn(">Играть <span aria-hidden=\"true\">↗</span>", page)
         self.assertNotIn('id="viz-token"', page)
         self.assertIn("stadmagic-profile-change", visualizer_script)
-        self.assertIn("connect(rememberedProfile.token, !rememberedProfile.token)", visualizer_script)
+        self.assertIn("connect(rememberedProfile.token, embeddedObserver || !rememberedProfile.token)", visualizer_script)
+        self.assertIn("if (embeddedObserver) return", visualizer_script)
         self.assertIn("ownSummary.hidden = !state.token", visualizer_script)
         self.assertIn("refreshArenaRanking(data.active || {})", visualizer_script)
         self.assertIn("leaders.dataset.count = String(Math.min(3, teams.length))", visualizer_script)
@@ -315,6 +337,9 @@ class HubTests(unittest.TestCase):
         self.assertIn("const MAX_CAMERA_ZOOM = 24", visualizer_script)
         self.assertIn("state.camera.zoom = MAX_CAMERA_ZOOM", visualizer_script)
         self.assertIn("state.autoFramePending", visualizer_script)
+        self.assertIn("updateEmbeddedObserverFocus(snapshot, now)", visualizer_script)
+        self.assertIn("state.embeddedNextFollowAt = now + 10000", visualizer_script)
+        self.assertIn("const targetCoin = coins.reduce", visualizer_script)
         self.assertIn("setFollowing(true)", visualizer_script)
         self.assertIn("НАБЛЮДАТЕЛЬ", visualizer_script)
         self.assertIn("ИГРОК", visualizer_script)
@@ -323,6 +348,8 @@ class HubTests(unittest.TestCase):
         self.assertIn("window.addEventListener('storage'", visualizer_script)
         visualizer_css = (Path(__file__).parent / "static" / "arena-visualizer.css").read_text(encoding="utf-8")
         visualizer_script = (Path(__file__).parent / "static" / "arena-visualizer.js").read_text(encoding="utf-8")
+        self.assertIn(".canvas-wrap{height:min(88vh,1000px);min-height:560px}", visualizer_css)
+        self.assertIn(".arena-pilot-callout", visualizer_css)
         self.assertIn(".arena-ranking-table-inner th{background:#17283a!important", visualizer_css)
         self.assertIn(".team-diamond", visualizer_css)
         self.assertIn(".arena-vote-row{box-sizing:border-box;width:100%", visualizer_css)
@@ -432,7 +459,7 @@ class HubTests(unittest.TestCase):
         self.assertIn("function sendNeutralManualCommand()", script)
         self.assertIn("acceleration: { x: 0, y: 0 }", script)
         self.assertIn("sendNeutralManualCommand();\n      renewLease(leaseId)", script)
-        self.assertIn("src=\"/static/arena-visualizer.js?v=11.0\"", page)
+        self.assertIn("src=\"/static/arena-visualizer.js?v=15.0\"", page)
         self.assertNotIn("routeFanScan", script)
         self.assertNotIn("scanReachability", script)
         self.assertIn("cell.dataset.label = headers[index]", script)
@@ -844,8 +871,8 @@ class HubTests(unittest.TestCase):
             result = store.leaderboard("world", {team: "Team One"}, world_number=1)["teams"][0]
             self.assertEqual(result["name"], "Team One")
             self.assertEqual(result["top"], {
-                "gold": 20, "gold_collected": 150, "carpets_lost": 2,
-                "distance_travelled": 25.0,
+                "gold": 40, "gold_collected": 100, "carpets_lost": 1,
+                "distance_travelled": 12.0,
             })
             self.assertEqual(result["total"], {
                 "gold": 60, "gold_collected": 250, "carpets_lost": 3,
@@ -874,25 +901,110 @@ class HubTests(unittest.TestCase):
             self.assertEqual(store.leaderboard("world", {}, world_number=1)["teams"], [])
             store.db.close()
 
-    def test_aggregate_rank_uses_total_collected_gold(self):
+    def test_ranks_use_gold_held_instead_of_lifetime_collected_gold(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "hub.sqlite3")
             stronger_single = token_id("single")
             consistent_team = token_id("consistent")
-            world = {"world_number": 1, "id": "quiet-harbor-01", "name": "Тихая бухта"}
+            world = {"world_number": 1, "id": "quiet-harbor-01", "name": "Тихая бухта",
+                     "config": {"carpet_count": 5}}
             first, _ = store.start_run(world, 8080)
-            second, _ = store.start_run(world, 8080)
             store.ingest(first, [
-                {"team_id": stronger_single, "gold_collected": 180},
-                {"team_id": consistent_team, "gold_collected": 120},
+                {"team_id": stronger_single, "gold": 19000, "gold_collected": 22000},
+                {"team_id": consistent_team, "gold": 20000, "gold_collected": 20000},
             ], {})
-            store.ingest(second, [
-                {"team_id": consistent_team, "gold_collected": 120},
-            ], {})
-            teams = store.leaderboard("world", {}, world_number=1)["teams"]
+            teams = store.leaderboard("run", {}, run_id=first)["teams"]
             self.assertEqual(teams[0]["team_id"], consistent_team)
-            self.assertEqual(teams[0]["top"]["gold_collected"], 120)
-            self.assertEqual(teams[0]["total"]["gold_collected"], 240)
+            self.assertEqual(teams[0]["gold"], 20000)
+            all_time = store.leaderboard("all", {})["teams"]
+            self.assertEqual(all_time[0]["team_id"], consistent_team)
+            store.db.close()
+
+    def test_gold_per_distance_ranking_and_metrics_use_selected_run_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "hub.sqlite3")
+            efficient = token_id("route-efficient")
+            wealthy = token_id("route-wealthy")
+            world = {"world_number": 1, "id": "test-world", "name": "Test", "config": {"carpet_count": 5}}
+            run_a, _ = store.start_run(world, 8080)
+            store.ingest(run_a, [
+                {"team_id": efficient, "gold": 1000, "gold_collected": 1800, "distance_travelled": 100},
+                {"team_id": wealthy, "gold": 3000, "gold_collected": 3500, "distance_travelled": 1000},
+            ], {})
+            by_gold = store.leaderboard("run", {}, run_id=run_a)["teams"]
+            by_efficiency = store.leaderboard("run", {}, run_id=run_a, sort_by="gold_per_distance")["teams"]
+            self.assertEqual(by_gold[0]["team_id"], wealthy)
+            self.assertEqual(by_efficiency[0]["team_id"], efficient)
+            self.assertEqual(by_efficiency[0]["gold_per_distance"], 10)
+            all_time = store.leaderboard("all", {}, sort_by="gold_per_distance")["teams"]
+            self.assertEqual(all_time[0]["gold_per_distance"], 10)
+            store.db.close()
+
+    def test_world_leaderboard_can_limit_to_latest_one_or_ten_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "hub.sqlite3")
+            team = token_id("world-window")
+            world = {"world_number": 1, "id": "window-world", "name": "Window", "config": {"carpet_count": 1}}
+            other_world = {"world_number": 2, "id": "other-window-world", "name": "Other", "config": {"carpet_count": 1}}
+            for gold in range(1, 13):
+                run_id, _ = store.start_run(world, 8080)
+                store.ingest(run_id, [{"team_id": team, "gold": gold, "distance_travelled": gold}], {})
+                if gold in (4, 8):
+                    other_run, _ = store.start_run(other_world, 8080)
+                    store.ingest(other_run, [{"team_id": team, "gold": 1000, "distance_travelled": 1}], {})
+            self.assertEqual(store.leaderboard("world", {}, world_number=1)["teams"][0]["total"]["gold"], 78)
+            latest_ten = store.leaderboard("world", {}, world_number=1, period="last_10")
+            self.assertEqual(latest_ten["teams"][0]["total"]["gold"], 75)
+            self.assertEqual(latest_ten["window_runs"], 10)
+            last_game = store.leaderboard("world", {}, world_number=1, period="last_1")["teams"][0]
+            self.assertEqual(last_game["total"]["gold"], 12)
+            self.assertEqual(last_game["attempts"], 1)
+            store.db.close()
+
+    def test_world_absolute_top_uses_each_teams_best_single_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "hub.sqlite3")
+            consistent = token_id("world-best-consistent")
+            spike = token_id("world-best-spike")
+            world = {"world_number": 1, "id": "best-world", "name": "Best", "config": {"carpet_count": 1}}
+            for team_id, gold, collected, distance in (
+                (consistent, 400, 900, 100),
+                (consistent, 900, 1000, 300),
+                (spike, 700, 5000, 100),
+            ):
+                run_id, _ = store.start_run(world, 8080)
+                store.ingest(run_id, [{"team_id": team_id, "gold": gold, "gold_collected": collected, "distance_travelled": distance}], {})
+            result = store.leaderboard("world", {}, world_number=1, period="best")["teams"]
+            self.assertEqual([team["team_id"] for team in result], [consistent, spike])
+            self.assertEqual(result[0]["attempts"], 2)
+            self.assertEqual(result[0]["total"]["gold"], 900)
+            self.assertEqual(result[0]["total"]["gold_collected"], 1000)
+            self.assertEqual(result[0]["gold_per_distance"], 3)
+            store.db.close()
+
+    def test_average_gold_per_carpet_and_last_ten_rankings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "hub.sqlite3")
+            efficient = token_id("efficient")
+            wealthy = token_id("wealthy")
+            world_five = {"world_number": 1, "id": "five", "name": "Five", "config": {"carpet_count": 5}}
+            world_one = {"world_number": 2, "id": "one", "name": "One", "config": {"carpet_count": 1}}
+            first, _ = store.start_run(world_five, 8080)
+            store.ingest(first, [
+                {"team_id": efficient, "gold": 5000},
+                {"team_id": wealthy, "gold": 9000},
+            ], {})
+            second, _ = store.start_run(world_one, 8080)
+            store.ingest(second, [
+                {"team_id": efficient, "gold": 7000},
+            ], {})
+            average = store.leaderboard("average", {})["teams"]
+            self.assertEqual(average[0]["team_id"], efficient)
+            self.assertEqual(average[0]["average_gold_per_carpet"], 4000)
+            recent = store.leaderboard("last_10", {})["teams"]
+            self.assertEqual(recent[0]["team_id"], efficient)
+            self.assertEqual(recent[0]["total"]["gold"], 12000)
+            self.assertEqual(recent[0]["attempts"], 2)
             store.db.close()
 
     def test_registry_file_is_not_part_of_public_reports(self):

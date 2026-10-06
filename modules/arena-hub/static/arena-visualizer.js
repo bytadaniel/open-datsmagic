@@ -1,4 +1,6 @@
 (() => {
+  const pageQuery = new URLSearchParams(location.search);
+  const embeddedObserver = pageQuery.get('mode') === 'observer' && pageQuery.get('embed') === '1';
   const canvas = document.querySelector('#arena-canvas');
   const context = canvas.getContext('2d', { alpha: false });
   const wrap = document.querySelector('.canvas-wrap');
@@ -25,12 +27,13 @@
   const state = {
     token: '', observer: false, current: null, previous: null, receivedAt: 0, previousAt: 0,
     selectedId: '', follow: false, autoFramePending: true, manual: false, leaseId: '',
+    embeddedFollowId: '', embeddedNextFollowAt: 0, embeddedCoinFocusKey: '',
     camera: { x: 0, y: 0, zoom: 1, initialized: false },
     width: 0, height: 0, dpr: 1, frameAt: performance.now(), frameCount: 0,
     fps: 0, pointer: null, pointerInside: false, stickVector: null,
     pointers: new Map(), gestureDistance: 0, dragging: false, dragStart: null,
     realtime: null, connecting: false, reconnectDelay: 250, commandTimer: 0, leaseTimer: 0,
-    arenaSeconds: null, arenaDeadline: 0, trajectoryCacheKey: '', trajectoryCache: null,
+    arenaSeconds: null, arenaDeadline: 0, arenaActive: null, trajectoryCacheKey: '', trajectoryCache: null,
     routeSegments: [], activeRouteSegment: 0, routeStartedAt: 0,
     historyCarpetId: '', historyTrail: [], collectedMarkers: [],
     physics: { dt: 0.2, friction: 0.98 },
@@ -137,6 +140,7 @@
 
   function updateArenaContext(data) {
     const active = data.active || {};
+    state.arenaActive = active;
     const profile = (data.worlds || []).find(world => world.id === active.world_id) || {};
     const config = profile.config || {};
     const tickRateMs = Number(config.tick_rate_ms);
@@ -290,6 +294,7 @@
   }
   refreshArenaContext();
   setInterval(refreshArenaContext, 5000);
+  document.querySelector('#arena-ranking-mode').addEventListener('change', () => refreshArenaRanking(state.arenaActive || {}));
   setInterval(() => {
     if (state.arenaSeconds === null) return;
     const countdown = document.querySelector('#arena-countdown');
@@ -331,25 +336,36 @@
       ownDeathCount.textContent = ownTeam ? String(Math.max(0, Math.trunc(finite(ownTeam.carpets_lost)))) : '0';
       ownRank.textContent = ownTeam ? `#${ownTeam.rank || teams.indexOf(ownTeam) + 1}` : '—';
     };
-    if (!active.run_id) {
-      status.textContent = 'Рейтинг появится, когда начнётся первый запуск арены.';
-      host.replaceChildren();
-      renderTopThree([]);
-      updateOwnStats([]);
-      return;
-    }
     try {
-      const response = await fetch(`/api/leaderboard?scope=run&run_id=${encodeURIComponent(active.run_id)}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `Hub ${response.status}`);
+      let currentTeams = [];
+      if (active.run_id) {
+        const currentResponse = await fetch(`/api/leaderboard?scope=run&run_id=${encodeURIComponent(active.run_id)}`);
+        const currentData = await currentResponse.json();
+        if (!currentResponse.ok) throw new Error(currentData.error || `Hub ${currentResponse.status}`);
+        currentTeams = currentData.teams || [];
+      }
+      renderTopThree(currentTeams);
+      updateOwnStats(currentTeams);
+      const mode = document.querySelector('#arena-ranking-mode').value;
+      if (mode === 'current' && !active.run_id) {
+        status.textContent = 'Рейтинг появится, когда начнётся первый запуск арены.';
+        host.replaceChildren();
+        return;
+      }
+      let data;
+      if (mode === 'current') data = { teams: currentTeams, run: { arena_name: active.arena_name } };
+      else {
+        const response = await fetch(`/api/leaderboard?scope=${mode}`);
+        data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Hub ${response.status}`);
+      }
       const teams = data.teams || [];
-      status.textContent = teams.length ? `${data.run?.arena_name || active.arena_name} · ${teams.length} команд` : 'Пока нет результатов — таблица заполнится после первых действий команд.';
-      renderTopThree(teams);
-      updateOwnStats(teams);
+      const countLabel = mode === 'last_10' ? `последние ${data.window_runs || 0} запусков` : mode === 'all' ? `вся история · ${teams.length} команд` : `${data.run?.arena_name || active.arena_name} · ${teams.length} команд`;
+      status.textContent = teams.length ? countLabel : 'Пока нет результатов для этого зачёта.';
       host.replaceChildren();
       if (!teams.length) return;
       const table = document.createElement('table'); table.className = 'arena-ranking-table-inner';
-      const headers = ['#', 'Команда', 'Золото', 'Собрано золота', 'Потеряно ковров', 'Пройдено'];
+      const headers = ['#', 'Команда', 'Золото', 'Собрано золота', 'Золото / м'];
       const thead = document.createElement('thead'), heading = document.createElement('tr');
       for (const label of headers) { const th = document.createElement('th'); th.textContent = label; heading.append(th); }
       thead.append(heading); table.append(thead);
@@ -357,7 +373,8 @@
       for (const team of teams.slice(0, 15)) {
         const row = document.createElement('tr');
         row.className = `rank-${team.rank}`;
-        const values = [team.rank, team.name, team.gold, team.gold_collected, team.carpets_lost, Math.round(team.distance_travelled).toLocaleString('ru-RU')];
+        const totals = mode === 'current' ? team : (team.total || {});
+        const values = [team.rank, team.name, totals.gold, totals.gold_collected, team.gold_per_distance];
         values.forEach((value, index) => {
           const cell = document.createElement('td');
           cell.dataset.label = headers[index];
@@ -368,7 +385,15 @@
             cell.append(document.createTextNode(Number(value || 0).toLocaleString('ru-RU')));
             const symbol = document.createElement('span'); symbol.className = 'ranking-gold-symbol';
             symbol.setAttribute('aria-label', 'золота'); symbol.textContent = '✦'; cell.append(' ', symbol);
-          } else cell.textContent = String(value ?? '—');
+          } else if (index === 4) {
+            if (value === null || value === undefined) cell.textContent = '—';
+            else {
+              cell.append(document.createTextNode(Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 3 })));
+              const symbol = document.createElement('span'); symbol.className = 'ranking-gold-symbol';
+              symbol.setAttribute('aria-label', 'золота'); symbol.textContent = '✦'; cell.append(' ', symbol, '/м');
+            }
+          }
+          else cell.textContent = String(value ?? '—');
           row.append(cell);
         });
         tbody.append(row);
@@ -992,10 +1017,12 @@
     ctx.save(); ctx.beginPath(); ctx.rect(mapRect.x, mapRect.y, mapRect.width, mapRect.height); ctx.clip();
     drawCoins(ctx, snapshot);
     drawAnomalies(ctx, snapshot.anomalies);
-    drawPreviousPath(ctx);
-    drawSelectedTrajectory(ctx, snapshot);
+    if (!embeddedObserver) {
+      drawPreviousPath(ctx);
+      drawSelectedTrajectory(ctx, snapshot);
+    }
     drawCarpets(ctx, snapshot);
-    drawManual(ctx, snapshot);
+    if (!embeddedObserver) drawManual(ctx, snapshot);
     ctx.restore();
     ctx.strokeStyle = '#91a5b3'; ctx.lineWidth = 1.5;
     ctx.strokeRect(mapRect.x, mapRect.y, mapRect.width, mapRect.height);
@@ -1024,6 +1051,56 @@
     followButton.classList.toggle('follow-on', state.follow);
   }
 
+  function updateEmbeddedObserverFocus(snapshot, now) {
+    const aliveCarpets = allCarpets(snapshot).filter(alive)
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    if (!aliveCarpets.length) {
+      const map = mapSize(snapshot), center = { x: map.x / 2, y: map.y / 2 };
+      const coins = snapshot.bounties || [];
+      const targetCoin = coins.reduce((best, coin) => {
+        if (!best) return coin;
+        const distance = item => Math.hypot(finite(item.x) - center.x, finite(item.y) - center.y);
+        return distance(coin) < distance(best) ? coin : best;
+      }, null);
+      const focusKey = targetCoin ? String(coinKey(targetCoin)) : '';
+      const needsFocus = state.autoFramePending || state.embeddedFollowId || focusKey !== state.embeddedCoinFocusKey;
+      state.embeddedFollowId = '';
+      state.embeddedNextFollowAt = 0;
+      state.selectedId = '';
+      select.value = '';
+      if (state.follow) setFollowing(false);
+      if (needsFocus) {
+        state.camera.x = finite(targetCoin?.x ?? center.x);
+        state.camera.y = finite(targetCoin?.y ?? center.y);
+        state.camera.zoom = MAX_CAMERA_ZOOM;
+        state.camera.initialized = true;
+      }
+      state.embeddedCoinFocusKey = focusKey;
+      state.autoFramePending = false;
+      return;
+    }
+
+    const currentIndex = aliveCarpets.findIndex(item => item.id === state.embeddedFollowId);
+    const targetDisappeared = Boolean(state.embeddedFollowId) && currentIndex < 0;
+    const rotate = aliveCarpets.length > 1 && now >= state.embeddedNextFollowAt;
+    if (!state.autoFramePending && currentIndex >= 0 && !targetDisappeared && !rotate) return;
+
+    const target = currentIndex >= 0 && rotate
+      ? aliveCarpets[(currentIndex + 1) % aliveCarpets.length]
+      : currentIndex >= 0 ? aliveCarpets[currentIndex]
+        : aliveCarpets.find(item => String(item.id).localeCompare(String(state.embeddedFollowId)) > 0) || aliveCarpets[0];
+    state.embeddedFollowId = target.id;
+    state.embeddedCoinFocusKey = '';
+    state.embeddedNextFollowAt = now + 10000;
+    state.autoFramePending = false;
+    selectCarpet(target.id);
+    setFollowing(true);
+    state.camera.x = finite(target.x);
+    state.camera.y = finite(target.y);
+    state.camera.zoom = MAX_CAMERA_ZOOM;
+    state.camera.initialized = true;
+  }
+
   function rebuildSelect() {
     if (!state.current) return;
     const items = allCarpets(state.current);
@@ -1035,6 +1112,11 @@
     select.disabled = !items.length;
     followButton.disabled = !items.length;
     manualButton.disabled = true;
+    if (embeddedObserver) {
+      if (items.some(item => item.id === state.selectedId)) select.value = state.selectedId;
+      else { state.selectedId = ''; select.value = ''; }
+      return;
+    }
     if (items.some(item => item.id === state.selectedId)) select.value = state.selectedId;
     else if (items.length) selectCarpet(items[0].id);
     else state.selectedId = '';
@@ -1062,7 +1144,9 @@
     const title = snapshot.name || 'Команда';
     document.title = `${title} · Арена StadMagic`;
     rebuildSelect();
-    if (state.autoFramePending) {
+    if (embeddedObserver) {
+      updateEmbeddedObserverFocus(snapshot, now);
+    } else if (state.autoFramePending) {
       const carpets = allCarpets(snapshot);
       const target = (state.token ? carpets.find(item => item.own && alive(item)) : null)
         || carpets.find(alive) || carpets[0];
@@ -1235,6 +1319,8 @@
     state.autoFramePending = true;
     state.selectedId = '';
     state.follow = false;
+    state.embeddedFollowId = '';
+    state.embeddedNextFollowAt = 0; state.embeddedCoinFocusKey = '';
     followButton.textContent = '◎ Следить'; followButton.classList.remove('follow-on');
     message.textContent = observer ? 'Подключаюсь к публичному просмотру…' : 'Подключаюсь к твоему флоту…'; message.className = 'viz-message';
     setConnection('connecting', 'Подключение…');
@@ -1277,6 +1363,7 @@
     document.querySelector('#nav-profile')?.click();
   });
   const handleProfileChange = () => {
+    if (embeddedObserver) return;
     const profile = storedProfile();
     syncArenaEntry();
     if (profile.token) {
@@ -1503,8 +1590,8 @@
     requestAnimationFrame(draw);
   }
   requestAnimationFrame(draw);
-  const rememberedProfile = storedProfile();
-  connect(rememberedProfile.token, !rememberedProfile.token);
+  const rememberedProfile = embeddedObserver ? { token: '', name: '' } : storedProfile();
+  connect(rememberedProfile.token, embeddedObserver || !rememberedProfile.token);
   window.addEventListener('pagehide', () => {
     if (state.token && state.leaseId) {
       sendNeutralManualCommand();
