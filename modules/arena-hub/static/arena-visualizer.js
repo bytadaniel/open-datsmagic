@@ -35,7 +35,7 @@
     realtime: null, connecting: false, reconnectDelay: 250, commandTimer: 0, leaseTimer: 0,
     arenaSeconds: null, arenaDeadline: 0, arenaActive: null, trajectoryCacheKey: '', trajectoryCache: null,
     routeSegments: [], activeRouteSegment: 0, routeStartedAt: 0,
-    historyCarpetId: '', historyTrail: [], collectedMarkers: [],
+    historyCarpetId: '', historyTrail: [], collectedMarkers: [], deathEvents: [],
     physics: { dt: 0.2, friction: 0.98 },
   };
   const worldSettingLabels = {
@@ -68,6 +68,7 @@
   const allCarpets = snapshot => [
     ...ownCarpets(snapshot).map(item => ({ ...item, own: true })), ...enemyCarpets(snapshot),
   ];
+  const carpetTeamKey = carpet => carpet.own ? 'own-team' : String(carpet.teamId || carpet.teamName || 'unknown');
   const byId = (snapshot, id) => allCarpets(snapshot).find(item => item.id === id);
   const alive = item => item?.status === 'alive';
   const finite = value => Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -80,6 +81,10 @@
       ? amount.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
       : Math.round(amount).toLocaleString('ru-RU');
     return `${formatted}${suffix} ✦`;
+  };
+  const carpetSlot = carpet => {
+    const match = String(carpet?.id || '').match(/_(\d+)$/);
+    return match ? String(Number(match[1]) + 1) : '';
   };
   const formatCompactCount = value => {
     const count = Math.max(0, Math.trunc(finite(value)));
@@ -522,23 +527,40 @@
   }
 
   function drawCoins(ctx, snapshot) {
-    const coins = snapshot?.bounties || [], factor = scale(), highlights = [];
+    const coins = snapshot?.bounties || [], factor = scale(), highlights = [], labels = [];
     // Render directly from world units: no whole-map bitmap to stretch on zoom.
     // Batch same-color circles into two Canvas paths to keep high coin counts cheap.
     ctx.fillStyle = '#d89a19'; ctx.beginPath();
     for (const coin of coins) {
       const p = worldToScreen(coin);
       const worldRadius = finite(coin.radius) || finite(snapshot?.transportRadius) || 4;
-      const radius = Math.max(.35, worldRadius * factor);
+      const radius = Math.max(.35, worldRadius * factor * .75);
       if (p.x < -radius || p.x > state.width + radius || p.y < -radius || p.y > state.height + radius) continue;
       ctx.moveTo(p.x + radius, p.y); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       if (radius >= 2.5) highlights.push([p.x - radius * .25, p.y - radius * .25, radius * .28]);
+      if (radius >= 6 && Number.isFinite(Number(coin.points))) {
+        labels.push({ x: p.x, y: p.y - radius - 9, value: formatCompactGold(coin.points) });
+      }
     }
     ctx.fill();
     if (highlights.length) {
       ctx.fillStyle = '#ffe09a'; ctx.beginPath();
       for (const [x, y, radius] of highlights) { ctx.moveTo(x + radius, y); ctx.arc(x, y, radius, 0, Math.PI * 2); }
       ctx.fill();
+    }
+    if (labels.length) {
+      ctx.font = '700 9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const label of labels) {
+        const width = ctx.measureText(label.value).width + 10, height = 14;
+        const x = Math.max(width / 2 + 2, Math.min(state.width - width / 2 - 2, label.x));
+        const y = Math.max(height / 2 + 2, label.y);
+        ctx.fillStyle = 'rgba(13, 27, 39, .9)';
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x - width / 2, y - height / 2, width, height, 4);
+        else ctx.rect(x - width / 2, y - height / 2, width, height);
+        ctx.fill();
+        ctx.fillStyle = '#ffe09a'; ctx.fillText(label.value, x, y);
+      }
     }
   }
 
@@ -561,6 +583,15 @@
   function drawCarpets(ctx, snapshot) {
     const carpets = allCarpets(snapshot);
     const radius = Math.max(4, Math.min(9, finite(snapshot.transportRadius) * scale()));
+    const teamNumbers = new Map(), carpetSlots = new Map(), teamSlotCounts = new Map();
+    for (const carpet of carpets) {
+      const teamKey = carpetTeamKey(carpet);
+      if (!teamNumbers.has(teamKey)) teamNumbers.set(teamKey, teamNumbers.size + 1);
+      const slot = carpetSlot(carpet);
+      const fallbackSlot = (teamSlotCounts.get(teamKey) || 0) + 1;
+      teamSlotCounts.set(teamKey, fallbackSlot);
+      carpetSlots.set(carpet.id, slot || String(fallbackSlot));
+    }
     for (const carpet of carpets) {
       const center = worldToScreen(carpet);
       if (!circleVisibleOnCanvas(center, radius + (carpet.id === state.selectedId ? 70 : 10))) continue;
@@ -584,8 +615,87 @@
         drawArrow(ctx, center, carpet.anomalyAcceleration, '#9a49b6', finite(snapshot.maxAccel), 2.5);
       }
       ctx.fillStyle = carpet.own ? '#132638' : '#fff'; ctx.font = `700 ${Math.max(6, Math.min(9, radius * 1.05))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(carpet.own ? carpet.id.slice(-2) : carpet.id.split('_').at(-1), center.x, center.y);
+      ctx.fillText(carpetSlots.get(carpet.id), center.x, center.y);
+      if (radius >= 5) {
+        const label = `Команда ${teamNumbers.get(carpetTeamKey(carpet))}`;
+        ctx.font = '700 9px system-ui';
+        const width = ctx.measureText(label).width + 10, height = 14;
+        const x = Math.max(width / 2 + 2, Math.min(state.width - width / 2 - 2, center.x));
+        const y = Math.max(height / 2 + 2, center.y - radius - 10);
+        ctx.fillStyle = 'rgba(13, 27, 39, .9)';
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x - width / 2, y - height / 2, width, height, 4);
+        else ctx.rect(x - width / 2, y - height / 2, width, height);
+        ctx.fill();
+        ctx.strokeStyle = palette.body; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = '#f5f7f9'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, x, y);
+      }
     }
+  }
+
+  function estimateDeathCause(carpet, snapshot) {
+    const point = { x: finite(carpet.x), y: finite(carpet.y) };
+    const carpetRadius = Math.max(0, finite(snapshot.transportRadius));
+    if ((snapshot.anomalies || []).some(anomaly =>
+      Math.hypot(point.x - finite(anomaly.x), point.y - finite(anomaly.y))
+        <= Math.max(0, finite(anomaly.radius)) + carpetRadius + 1)) return 'ядро аномалии';
+    if (allCarpets(snapshot).some(other => other.id !== carpet.id
+      && Math.hypot(point.x - finite(other.x), point.y - finite(other.y)) <= carpetRadius * 2 + 1)) {
+      return 'столкновение ковров';
+    }
+    const map = mapSize(snapshot);
+    if (point.x < 0 || point.x > map.x || point.y < 0 || point.y > map.y) return 'граница арены';
+    return 'причина неясна';
+  }
+
+  function recordDeathEvents(previous, snapshot, now) {
+    if (!previous) return;
+    const carpets = allCarpets(snapshot), teamNumbers = new Map();
+    for (const carpet of carpets) {
+      const key = carpetTeamKey(carpet);
+      if (!teamNumbers.has(key)) teamNumbers.set(key, teamNumbers.size + 1);
+    }
+    for (const carpet of carpets) {
+      const before = byId(previous, carpet.id);
+      if (!before) continue;
+      const statusChanged = alive(before) && !alive(carpet);
+      const deathCountChanged = carpet.own && finite(carpet.deathCount) > finite(before.deathCount);
+      if (!statusChanged && !deathCountChanged) continue;
+      const cause = statusChanged ? estimateDeathCause(carpet, snapshot) : 'причина неясна';
+      state.deathEvents.unshift({
+        text: `Команда ${teamNumbers.get(carpetTeamKey(carpet))} · ковёр ${carpetSlot(carpet) || '—'} · ${cause}`,
+        time: now,
+      });
+    }
+    state.deathEvents = state.deathEvents.slice(0, 5);
+  }
+
+  function drawDeathLog(ctx) {
+    const now = performance.now();
+    state.deathEvents = state.deathEvents.filter(event => now - event.time < 30_000);
+    if (!state.deathEvents.length || state.width < 190) return;
+    const padding = 9, rowHeight = 17, panelWidth = Math.min(258, state.width - 16);
+    const rows = state.deathEvents.slice(0, 4), panelHeight = 24 + rows.length * rowHeight + 7;
+    const x = state.width - panelWidth - 8, y = 8;
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 18, 29, .88)'; ctx.strokeStyle = 'rgba(113, 133, 148, .48)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, panelWidth, panelHeight, 9);
+    else ctx.rect(x, y, panelWidth, panelHeight);
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = '800 8px system-ui'; ctx.fillStyle = '#aebdca';
+    ctx.fillText('СОБЫТИЯ АРЕНЫ', x + padding, y + 12);
+    ctx.font = '600 9px system-ui';
+    for (const [index, event] of rows.entries()) {
+      let text = event.text;
+      const maxTextWidth = panelWidth - padding * 2;
+      while (text.length > 4 && ctx.measureText(text).width > maxTextWidth) text = `${text.slice(0, -2)}…`;
+      ctx.globalAlpha = Math.max(.45, 1 - (now - event.time) / 30_000);
+      ctx.fillStyle = '#f1c4c5';
+      ctx.fillText(text, x + padding, y + 29 + index * rowHeight);
+    }
+    ctx.restore();
   }
 
   function accelerationFor(carpet, snapshot) {
@@ -1023,6 +1133,7 @@
     }
     drawCarpets(ctx, snapshot);
     if (!embeddedObserver) drawManual(ctx, snapshot);
+    drawDeathLog(ctx);
     ctx.restore();
     ctx.strokeStyle = '#91a5b3'; ctx.lineWidth = 1.5;
     ctx.strokeRect(mapRect.x, mapRect.y, mapRect.width, mapRect.height);
@@ -1128,6 +1239,7 @@
     if (state.current) { state.previous = state.current; state.previousAt = state.receivedAt; }
     else { state.previous = null; state.previousAt = now - 200; }
     state.current = snapshot;
+    recordDeathEvents(state.previous, snapshot, now);
     const goldSummary = document.querySelector('#viz-gold-summary');
     const ownSummary = document.querySelector('#viz-own-summary');
     ownSummary.hidden = !state.token;
@@ -1189,7 +1301,12 @@
       socket.onmessage = event => {
         try {
           const packet = JSON.parse(event.data);
-          if (packet.type === 'snapshot') updateSnapshot({ ...packet.state, enemyTeams: packet.enemyTeams || [] });
+          if (packet.type === 'snapshot') {
+            const previousWaypoint = state.routeSegments[state.activeRouteSegment];
+            updateSnapshot({ ...packet.state, enemyTeams: packet.enemyTeams || [] });
+            // Apply a newly advanced waypoint immediately on its confirming snapshot.
+            if (state.manual && previousWaypoint !== state.routeSegments[state.activeRouteSegment]) sendRealtimeCommand();
+          }
           else if (packet.type === 'error') message.textContent = packet.error;
         } catch (_) { /* ignore malformed server frame */ }
       };
