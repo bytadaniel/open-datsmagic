@@ -5,7 +5,10 @@
   const context = canvas.getContext('2d', { alpha: false });
   const wrap = document.querySelector('.canvas-wrap');
   const teamConnectButton = document.querySelector('#arena-team-connect');
-  const select = document.querySelector('#carpet-select');
+  const teamSelect = document.querySelector('#team-select');
+  const carpetPosition = document.querySelector('#carpet-position');
+  const carpetPrevButton = document.querySelector('#carpet-prev');
+  const carpetNextButton = document.querySelector('#carpet-next');
   const followButton = document.querySelector('#follow-toggle');
   const manualButton = document.querySelector('#manual-toggle');
   const message = document.querySelector('#viz-message');
@@ -26,7 +29,7 @@
 
   const state = {
     token: '', observer: false, current: null, previous: null, receivedAt: 0, previousAt: 0,
-    selectedId: '', follow: false, autoFramePending: true, manual: false, leaseId: '',
+    selectedId: '', selectedTeamKey: '', teamPickerSignature: '', follow: false, autoFramePending: true, manual: false, leaseId: '',
     embeddedFollowId: '', embeddedNextFollowAt: 0, embeddedCoinFocusKey: '',
     camera: { x: 0, y: 0, zoom: 1, initialized: false },
     width: 0, height: 0, dpr: 1, frameAt: performance.now(), frameCount: 0,
@@ -62,7 +65,7 @@
   const ownCarpets = snapshot => snapshot?.transports || [];
   const enemyCarpets = snapshot => (snapshot?.enemies || []).map((item, index) => {
     const owner = snapshot?.enemyTeams?.[index] || {};
-    return { ...item, id: owner.carpetId || `enemy_${index}`, teamId: owner.teamId || 'unknown',
+    return { ...item, id: owner.carpetId || `enemy_${index}`, teamId: owner.teamId || owner.teamName || 'unknown',
       teamName: owner.teamName || `Команда ${index + 1}`, own: false };
   });
   const allCarpets = snapshot => [
@@ -370,7 +373,7 @@
       host.replaceChildren();
       if (!teams.length) return;
       const table = document.createElement('table'); table.className = 'arena-ranking-table-inner';
-      const headers = ['#', 'Команда', 'Золото', 'Собрано золота', 'Золото / м'];
+      const headers = ['#', 'Команда', 'Попыток', 'Золото', 'Собрано золота', 'Потери ковров', 'Пройдено, м', 'Золото / м'];
       const thead = document.createElement('thead'), heading = document.createElement('tr');
       for (const label of headers) { const th = document.createElement('th'); th.textContent = label; heading.append(th); }
       thead.append(heading); table.append(thead);
@@ -379,18 +382,22 @@
         const row = document.createElement('tr');
         row.className = `rank-${team.rank}`;
         const totals = mode === 'current' ? team : (team.total || {});
-        const values = [team.rank, team.name, totals.gold, totals.gold_collected, team.gold_per_distance];
+        const values = [team.rank, team.name, team.attempts ?? (mode === 'current' ? 1 : 0), totals.gold,
+          totals.gold_collected, totals.carpets_lost, totals.distance_travelled, team.gold_per_distance];
         values.forEach((value, index) => {
           const cell = document.createElement('td');
           cell.dataset.label = headers[index];
           if (index === 0) cell.className = 'rank-cell';
           if (index === 1) cell.className = 'team';
-          if (index === 2 || index === 3) {
+          if (index === 3 || index === 4) {
             cell.className = 'gold-cell';
             cell.append(document.createTextNode(Number(value || 0).toLocaleString('ru-RU')));
             const symbol = document.createElement('span'); symbol.className = 'ranking-gold-symbol';
             symbol.setAttribute('aria-label', 'золота'); symbol.textContent = '✦'; cell.append(' ', symbol);
-          } else if (index === 4) {
+          } else if (index === 6) {
+            cell.textContent = value === null || value === undefined ? '—'
+              : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+          } else if (index === 7) {
             if (value === null || value === undefined) cell.textContent = '—';
             else {
               cell.append(document.createTextNode(Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 3 })));
@@ -1152,8 +1159,9 @@
     if (state.manual && id !== state.selectedId) disableManual(true);
     if (id !== state.historyCarpetId) { state.historyCarpetId = id; state.historyTrail = []; state.collectedMarkers = []; }
     state.selectedId = id;
-    select.value = id;
     const item = byId(state.current, id);
+    if (item) state.selectedTeamKey = carpetTeamKey(item);
+    updateCarpetPicker();
     const ownAlive = item?.own && alive(item);
     manualButton.disabled = !ownAlive;
     if (!ownAlive && state.manual) disableManual(true);
@@ -1182,7 +1190,8 @@
       state.embeddedFollowId = '';
       state.embeddedNextFollowAt = 0;
       state.selectedId = '';
-      select.value = '';
+      teamSelect.value = '';
+      updateCarpetPicker();
       if (state.follow) setFollowing(false);
       if (needsFocus) {
         state.camera.x = finite(targetCoin?.x ?? center.x);
@@ -1219,22 +1228,60 @@
   function rebuildSelect() {
     if (!state.current) return;
     const items = allCarpets(state.current);
-    const existing = [...select.options].map(option => option.value);
-    const values = items.map(item => item.id);
-    if (values.length === existing.length && values.every((value, i) => value === existing[i])) return;
-    select.replaceChildren(...items.map((item, index) => new Option(
-      `${item.own ? 'Твой флот' : item.teamName} · ${item.id || `Ковер ${index + 1}`} · ${item.status || 'alive'}`, item.id)));
-    select.disabled = !items.length;
+    const groupsByKey = new Map();
+    for (const item of items) {
+      const key = carpetTeamKey(item);
+      if (!groupsByKey.has(key)) groupsByKey.set(key, { key, own: item.own, name: item.own
+        ? (storedProfile().name || 'Моя команда') : (item.teamName || 'Команда'), items: [] });
+      groupsByKey.get(key).items.push(item);
+    }
+    const groups = [...groupsByKey.values()].sort((a, b) => Number(b.own) - Number(a.own)
+      || a.name.localeCompare(b.name, 'ru'));
+    const signature = groups.map(group => `${group.key}:${group.name}`).join('|');
+    if (signature !== state.teamPickerSignature) {
+      teamSelect.replaceChildren(...groups.map(group => {
+        const count = group.items.length, word = count % 10 === 1 && count % 100 !== 11 ? 'ковёр'
+          : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'ковра' : 'ковров';
+        return new Option(`${group.name} · ${count} ${word}`, group.key);
+      }));
+      state.teamPickerSignature = signature;
+    }
+    teamSelect.disabled = !groups.length;
     followButton.disabled = !items.length;
     manualButton.disabled = true;
+    const selected = items.find(item => item.id === state.selectedId);
+    if (selected) state.selectedTeamKey = carpetTeamKey(selected);
+    if (!groups.some(group => group.key === state.selectedTeamKey)) state.selectedTeamKey = groups[0]?.key || '';
+    teamSelect.value = state.selectedTeamKey;
     if (embeddedObserver) {
-      if (items.some(item => item.id === state.selectedId)) select.value = state.selectedId;
-      else { state.selectedId = ''; select.value = ''; }
+      if (!selected) state.selectedId = '';
+      updateCarpetPicker();
       return;
     }
-    if (items.some(item => item.id === state.selectedId)) select.value = state.selectedId;
-    else if (items.length) selectCarpet(items[0].id);
-    else state.selectedId = '';
+    if (!selected && groups.length) {
+      const group = groups.find(item => item.key === state.selectedTeamKey);
+      const target = group?.items.find(alive) || group?.items[0];
+      if (target) selectCarpet(target.id);
+    } else {
+      if (!selected) state.selectedId = '';
+      updateCarpetPicker();
+    }
+  }
+
+  function updateCarpetPicker() {
+    const items = allCarpets(state.current).filter(item => carpetTeamKey(item) === state.selectedTeamKey);
+    const index = items.findIndex(item => item.id === state.selectedId);
+    carpetPosition.textContent = index >= 0 ? `Ковер ${index + 1} / ${items.length}` : `Ковер — / ${items.length || '—'}`;
+    carpetPrevButton.disabled = items.length < 2;
+    carpetNextButton.disabled = items.length < 2;
+    teamSelect.value = state.selectedTeamKey;
+  }
+
+  function cycleCarpet(offset) {
+    const items = allCarpets(state.current).filter(item => carpetTeamKey(item) === state.selectedTeamKey);
+    if (items.length < 2) return;
+    const index = items.findIndex(item => item.id === state.selectedId);
+    selectCarpet(items[(index + offset + items.length) % items.length].id);
   }
 
   function updateSnapshot(snapshot) {
@@ -1501,7 +1548,14 @@
     if (event.key === 'stadmagic-team-token' || event.key === 'stadmagic-team-name') handleProfileChange();
   });
   syncArenaEntry();
-  select.addEventListener('change', () => selectCarpet(select.value));
+  teamSelect.addEventListener('change', () => {
+    state.selectedTeamKey = teamSelect.value;
+    const items = allCarpets(state.current).filter(item => carpetTeamKey(item) === state.selectedTeamKey);
+    const target = items.find(alive) || items[0];
+    if (target) selectCarpet(target.id);
+  });
+  carpetPrevButton.addEventListener('click', () => cycleCarpet(-1));
+  carpetNextButton.addEventListener('click', () => cycleCarpet(1));
   followButton.addEventListener('click', () => {
     setFollowing(!state.follow);
   });

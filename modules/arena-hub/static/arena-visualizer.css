@@ -695,3 +695,12 @@ body.arena-immersive-mobile .site-header{display:none!important}
 .arena-ranking-mode{display:grid;gap:5px;min-width:min(320px,100%);color:#91a7ba;font-size:.7rem;font-weight:750}
 .arena-ranking-mode select{min-width:0;min-height:38px;padding:7px 30px 7px 10px;border:1px solid #ffffff18;border-radius:9px;background:#0a1724;color:#e1ebf3;font-size:.76rem}
 @media(max-width:620px){.arena-ranking-mode{width:100%;min-width:0}.arena-ranking-heading{align-items:stretch;flex-wrap:wrap}.arena-ranking-heading>span{width:100%}}
+.viz-team-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:9px;width:100%;max-width:580px}
+.viz-team-picker .select-label{max-width:none}
+.carpet-cycle{display:flex;align-items:center;gap:5px;padding:3px;border:1px solid #ffffff12;border-radius:12px;background:#0b1723}
+.carpet-cycle button{display:grid;place-items:center;min-width:36px;min-height:36px;padding:3px;border:0;background:transparent;color:#dce8f2;font-size:1.25rem;line-height:1}
+.carpet-cycle button:hover:not(:disabled){background:#ffffff10}
+.carpet-cycle button:disabled{opacity:.35;cursor:default}
+.carpet-cycle span{min-width:82px;color:#b9c9d6;font-size:.72rem;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap}
+@media(max-width:760px){.viz-team-picker{max-width:none}}
+@media(max-width:520px){.viz-team-picker{grid-template-columns:minmax(0,1fr) auto;gap:6px}.viz-team-picker .select-label{grid-template-columns:auto minmax(0,1fr);gap:6px;padding-inline:8px}.viz-team-picker .select-label>span{font-size:.7rem}.carpet-cycle{gap:2px}.carpet-cycle button{min-width:34px;min-height:40px}.carpet-cycle span{min-width:74px;font-size:.68rem}}
