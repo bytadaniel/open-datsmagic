@@ -878,6 +878,39 @@ def page(title: str, body: str) -> bytes:
     motion = """<div class="page-ambient" aria-hidden="true"><i></i><i></i><i></i></div><dialog class="site-auth-dialog" id="site-auth-dialog"><form id="site-auth-form"><button type="button" class="auth-close" id="site-auth-close" aria-label="Закрыть">×</button><span class="eyebrow">ПРОФИЛЬ КОМАНДЫ</span><h2>Подключить команду</h2><p>Введи токен один раз. Он сохранится только в этом браузере и будет подставляться для голосования и игры.</p><label for="site-auth-token">Токен команды</label><input id="site-auth-token" type="password" autocomplete="current-password" required placeholder="Вставь токен команды"><p id="site-auth-status" class="auth-status" role="status" aria-live="polite"></p><div class="auth-actions"><button type="submit" id="site-auth-submit">Войти</button><button type="button" class="secondary" id="site-auth-logout" hidden>Выйти</button></div></form></dialog><script>
       (()=>{const profile=document.querySelector('#nav-profile'),dialog=document.querySelector('#site-auth-dialog'),form=document.querySelector('#site-auth-form'),tokenInput=document.querySelector('#site-auth-token'),status=document.querySelector('#site-auth-status'),logout=document.querySelector('#site-auth-logout');const read=key=>{try{return localStorage.getItem(key)||''}catch(_){return ''}};const syncProfile=()=>{const name=read('stadmagic-team-name'),token=read('stadmagic-team-token');if(profile){profile.firstChild.textContent=name||'Войти ';profile.classList.toggle('has-team',Boolean(token&&name));profile.setAttribute('aria-label',token&&name?`Команда ${name}`:'Войти с токеном команды')}if(tokenInput&&!dialog.open)tokenInput.value=token;if(logout)logout.hidden=!token};syncProfile();if(profile)profile.addEventListener('click',event=>{event.preventDefault();syncProfile();dialog.showModal()});document.querySelector('#site-auth-close').addEventListener('click',()=>dialog.close());dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});logout.addEventListener('click',()=>{try{localStorage.removeItem('stadmagic-team-token');localStorage.removeItem('stadmagic-team-name')}catch(_){}tokenInput.value='';window.dispatchEvent(new Event('stadmagic-profile-change'));status.textContent='Команда отключена в этом браузере.';syncProfile()});form.addEventListener('submit',async event=>{event.preventDefault();const token=tokenInput.value.trim(),submit=document.querySelector('#site-auth-submit');submit.disabled=true;status.textContent='Проверяем токен…';try{const response=await fetch('/api/teams/me',{headers:{'X-Auth-Token':token}}),data=await response.json();if(!response.ok)throw Error(data.error||'Токен не принят');try{localStorage.setItem('stadmagic-team-token',token);localStorage.setItem('stadmagic-team-name',data.name)}catch(_){throw Error('Браузер запретил сохранить профиль. Разреши локальное хранилище и повтори попытку.')}window.dispatchEvent(new Event('stadmagic-profile-change'));status.textContent=`Ты вошёл как «${data.name}».`;syncProfile();setTimeout(()=>dialog.close(),500)}catch(error){status.textContent=error.message}finally{submit.disabled=false}});window.addEventListener('storage',syncProfile);window.addEventListener('stadmagic-profile-change',syncProfile);const stored=read('stadmagic-team-token');if(stored)fetch('/api/teams/me',{headers:{'X-Auth-Token':stored}}).then(async response=>{if(!response.ok)throw Error('invalid token');const data=await response.json();try{localStorage.setItem('stadmagic-team-name',data.name)}catch(_){}window.dispatchEvent(new Event('stadmagic-profile-change'))}).catch(()=>{try{localStorage.removeItem('stadmagic-team-token');localStorage.removeItem('stadmagic-team-name')}catch(_){}syncProfile()});const ambient=document.querySelector('.page-ambient');let frame=0,point=null;window.addEventListener('pointermove',event=>{point={x:event.clientX,y:event.clientY};if(frame)return;frame=requestAnimationFrame(()=>{ambient.style.setProperty('--pointer-x',`${point.x}px`);ambient.style.setProperty('--pointer-y',`${point.y}px`);frame=0})},{passive:true});const targets=document.querySelectorAll('main .card,main > section:not(.card),main > details,main > .home-resources,.arena-context,.visualizer-layout');if(!('IntersectionObserver'in window)){targets.forEach(node=>node.classList.add('scroll-reveal','is-visible'));return}targets.forEach(node=>node.classList.add('scroll-reveal'));document.body.classList.add('scroll-motion-ready');const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target)}}},{threshold:.08,rootMargin:'0px 0px -36px 0px'});targets.forEach(node=>observer.observe(node))})();
     </script>"""
+    scroll_motion = """<script>
+      (()=>{
+        const ambient=document.querySelector('.page-ambient');
+        if(!ambient||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+        const layers=[...ambient.querySelectorAll('i')];
+        const maxScroll=1800;
+        let target=Math.min(window.scrollY,maxScroll),position=target,velocity=0,frame=0,lastTime=0;
+        const render=()=>{
+          ambient.style.setProperty('--ambient-base-shift',`${-position*.025}px`);
+          layers.forEach((layer,index)=>{
+            const depth=[.075,.12,.045][index]||.06;
+            layer.style.setProperty('--ambient-layer-shift',`${-position*depth}px`);
+          });
+        };
+        const tick=time=>{
+          const dt=lastTime?Math.min((time-lastTime)/1000,.032):0;
+          lastTime=time;
+          const acceleration=(target-position)*82-velocity*15;
+          velocity+=acceleration*dt;
+          position+=velocity*dt;
+          render();
+          if(Math.abs(target-position)>.12||Math.abs(velocity)>.35){frame=requestAnimationFrame(tick)}
+          else{position=target;velocity=0;lastTime=0;render();frame=0}
+        };
+        const onScroll=()=>{
+          target=Math.min(window.scrollY,maxScroll);
+          if(!frame)frame=requestAnimationFrame(tick);
+        };
+        window.addEventListener('scroll',onScroll,{passive:true});
+        render();
+        onScroll();
+      })();
+    </script>"""
     interactions = """<script>
       (()=>{
         const pending=new WeakMap();
@@ -894,7 +927,7 @@ def page(title: str, body: str) -> bytes:
         });
       })();
     </script>"""
-    return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main class=page-container>{body}</main>{footer}{motion}{interactions}</body></html>").encode("utf-8")
+    return (f"<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'><meta name=theme-color content='#08111d'><title>{esc(title)}</title>{STYLE}</head><body>{nav}<main class=page-container>{body}</main>{footer}{motion}{scroll_motion}{interactions}</body></html>").encode("utf-8")
 
 
 def home_html(state: HubState) -> bytes:

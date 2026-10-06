@@ -334,3 +334,8 @@ details[open]>.disclosure-content>.disclosure-inner{transform:translateY(0)}
 .home-podium .podium-placeholder .podium-rank{border-color:#ffffff10;background:#ffffff05;color:#71869a;box-shadow:none}
 @media(max-width:760px){.home-podium .podium-switch{width:100%;min-width:0}}
 @media(max-width:680px){.home-podium .podium-scope{min-width:0;padding:6px 3px;font-size:.68rem;line-height:1.15;white-space:normal}}
+
+/* Scroll only the ambient light layers; a damped spring gives them soft inertia. */
+.page-ambient:before{translate:0 var(--ambient-base-shift,0px)}
+.page-ambient i{translate:0 var(--ambient-layer-shift,0px)}
+@media(prefers-reduced-motion:reduce){.page-ambient:before,.page-ambient i{translate:none!important}}
