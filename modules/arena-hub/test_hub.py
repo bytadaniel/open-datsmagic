@@ -71,6 +71,8 @@ class HubTests(unittest.TestCase):
         self.assertIn('id="home-live-title"', home)
         self.assertIn('class="home-arena-cta" href="/arena"', home)
         self.assertIn("/api/leaderboard?", home)
+        self.assertIn("const apiScope=podiumScope==='current'?'run':podiumScope", home)
+        self.assertIn("query.set('run_id',homeActive.run_id)", home)
         self.assertIn("home-top-teams", home)
         self.assertIn("podiumDistance(value)", home)
         self.assertIn("пройдено, км", home)
@@ -896,9 +898,15 @@ class HubTests(unittest.TestCase):
     def test_empty_aggregate_leaderboards_return_empty_team_lists(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "hub.sqlite3")
-            store.start_run({"world_number": 1, "id": "quiet-harbor-01", "name": "Тихая бухта"}, 8080)
+            run_id, _ = store.start_run({"world_number": 1, "id": "quiet-harbor-01", "name": "Тихая бухта"}, 8080)
             self.assertEqual(store.leaderboard("all", {})["teams"], [])
             self.assertEqual(store.leaderboard("world", {}, world_number=1)["teams"], [])
+            self.assertEqual(store.leaderboard("run", {}, run_id=run_id)["teams"], [])
+            solo_team = token_id("single-live-team")
+            store.ingest(run_id, [{"team_id": solo_team, "gold": 125, "gold_collected": 200}], {})
+            run_teams = store.leaderboard("run", {}, run_id=run_id)["teams"]
+            self.assertEqual(len(run_teams), 1)
+            self.assertEqual(run_teams[0]["team_id"], solo_team)
             store.db.close()
 
     def test_ranks_use_gold_held_instead_of_lifetime_collected_gold(self):
