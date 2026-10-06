@@ -538,7 +538,8 @@
       if (p.x < -radius || p.x > state.width + radius || p.y < -radius || p.y > state.height + radius) continue;
       ctx.moveTo(p.x + radius, p.y); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       if (radius >= 2.5) highlights.push([p.x - radius * .25, p.y - radius * .25, radius * .28]);
-      if (radius >= 6 && Number.isFinite(Number(coin.points))) {
+      const showDenomination = embeddedObserver ? radius >= 2.5 : radius >= 6;
+      if (showDenomination && Number.isFinite(Number(coin.points))) {
         labels.push({ x: p.x, y: p.y - radius - 9, value: formatCompactGold(coin.points) });
       }
     }
@@ -616,7 +617,7 @@
       }
       ctx.fillStyle = carpet.own ? '#132638' : '#fff'; ctx.font = `700 ${Math.max(6, Math.min(9, radius * 1.05))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(carpetSlots.get(carpet.id), center.x, center.y);
-      if (radius >= 5) {
+      if (embeddedObserver || radius >= 5) {
         const label = `Команда ${teamNumbers.get(carpetTeamKey(carpet))}`;
         ctx.font = '700 9px system-ui';
         const width = ctx.measureText(label).width + 10, height = 14;
@@ -676,7 +677,8 @@
     if (!state.deathEvents.length || state.width < 190) return;
     const padding = 9, rowHeight = 17, panelWidth = Math.min(258, state.width - 16);
     const rows = state.deathEvents.slice(0, 4), panelHeight = 24 + rows.length * rowHeight + 7;
-    const x = state.width - panelWidth - 8, y = 8;
+    const x = embeddedObserver ? 8 : state.width - panelWidth - 8;
+    const y = embeddedObserver ? 58 : 8;
     ctx.save();
     ctx.fillStyle = 'rgba(8, 18, 29, .88)'; ctx.strokeStyle = 'rgba(113, 133, 148, .48)'; ctx.lineWidth = 1;
     ctx.beginPath();
