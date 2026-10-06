@@ -953,9 +953,10 @@ class HubTests(unittest.TestCase):
             by_efficiency = store.leaderboard("run", {}, run_id=run_a, sort_by="gold_per_distance")["teams"]
             self.assertEqual(by_gold[0]["team_id"], wealthy)
             self.assertEqual(by_efficiency[0]["team_id"], efficient)
-            self.assertEqual(by_efficiency[0]["gold_per_distance"], 10)
+            self.assertEqual(by_efficiency[0]["gold_per_distance"], 18)
+            self.assertEqual(by_efficiency[1]["gold_per_distance"], 3.5)
             all_time = store.leaderboard("all", {}, sort_by="gold_per_distance")["teams"]
-            self.assertEqual(all_time[0]["gold_per_distance"], 10)
+            self.assertEqual(all_time[0]["gold_per_distance"], 18)
             store.db.close()
 
     def test_world_leaderboard_can_limit_to_latest_one_or_ten_runs(self):
@@ -997,7 +998,7 @@ class HubTests(unittest.TestCase):
             self.assertEqual(result[0]["attempts"], 2)
             self.assertEqual(result[0]["total"]["gold"], 900)
             self.assertEqual(result[0]["total"]["gold_collected"], 1000)
-            self.assertEqual(result[0]["gold_per_distance"], 3)
+            self.assertAlmostEqual(result[0]["gold_per_distance"], 1000 / 300)
             store.db.close()
 
     def test_average_gold_per_carpet_and_last_ten_rankings(self):

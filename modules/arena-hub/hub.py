@@ -387,10 +387,11 @@ class Store:
                 for item in teams:
                     item["gold_per_carpet"] = item["gold"] / carpet_count if carpet_count else None
                     distance = float(item["distance_travelled"] or 0)
-                    item["gold_per_distance"] = item["gold"] / distance if distance > 0 else None
+                    collected = float(item["gold_collected"] or 0)
+                    item["gold_per_distance"] = collected / distance if distance > 0 else None
                 if sort_by == "gold_per_distance":
                     teams = [item for item in teams if item["gold_per_distance"] is not None]
-                    teams.sort(key=lambda item: (-item["gold_per_distance"], -item["gold"], item["name"].casefold()))
+                    teams.sort(key=lambda item: (-item["gold_per_distance"], -item["gold_collected"], item["name"].casefold()))
                 else:
                     teams.sort(key=lambda item: (-item["gold"], -item["gold_collected"], item["name"].casefold()))
                 for rank, item in enumerate(teams, 1):
@@ -455,16 +456,16 @@ class Store:
                 "attempts": len(attempts),
                 "average_gold_per_carpet": sum(per_round) / len(per_round) if per_round else None,
                 "average_rounds": len(per_round),
-                "gold_per_distance": (best["gold"] / best["distance_travelled"] if best["distance_travelled"] > 0 else None)
+                "gold_per_distance": (best["gold_collected"] / best["distance_travelled"] if best["distance_travelled"] > 0 else None)
                     if scope == "world" and period == "best"
-                    else total["gold"] / total["distance_travelled"] if total["distance_travelled"] > 0 else None,
+                    else total["gold_collected"] / total["distance_travelled"] if total["distance_travelled"] > 0 else None,
                 "top": top,
                 "total": total,
                 "best_run": {"run_id": best["run_id"], "world_number": best["world_number"], "world_id": best["world_id"], "world_name": best["world_name"], "started_at": dt.datetime.fromtimestamp(best["started_at"], dt.timezone.utc).isoformat(timespec="seconds")},
             })
         if sort_by == "gold_per_distance":
             teams = [item for item in teams if item["gold_per_distance"] is not None]
-            teams.sort(key=lambda item: (-item["gold_per_distance"], -item["total"]["gold"], item["name"].casefold()))
+            teams.sort(key=lambda item: (-item["gold_per_distance"], -item["total"]["gold_collected"], item["name"].casefold()))
         elif scope == "average":
             teams = [item for item in teams if item["average_gold_per_carpet"] is not None]
             teams.sort(key=lambda item: (-item["average_gold_per_carpet"], -item["total"]["gold"], item["name"].casefold()))
