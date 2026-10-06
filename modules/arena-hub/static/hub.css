@@ -323,12 +323,14 @@ details[open]>.disclosure-content>.disclosure-inner{transform:translateY(0)}
 @media(max-width:680px){.leaderboard-table-head{padding:16px}.leaderboard-table td{height:52px;padding-block:12px;font-size:.8rem}}
 @media(prefers-reduced-motion:reduce){.leaderboard-table tbody tr{transition:none}}
 
-/* The homepage uses the original two-state, three-card podium. */
-.home-podium .podium-switch{grid-template-columns:repeat(2,minmax(0,1fr));min-width:330px}
-.home-podium .podium-switch:before{width:calc(50% - 4px)}
+/* The homepage podium has three periods and keeps its three-card layout. */
+.home-podium .podium-switch{grid-template-columns:repeat(3,minmax(0,1fr));min-width:450px}
+.home-podium .podium-switch:before{width:calc(33.333% - 4px)}
 .home-podium .podium-switch:has([data-scope=current].is-active):before{transform:translateX(0)}
-.home-podium .podium-switch:has([data-scope=all].is-active):before{transform:translateX(100%)}
+.home-podium .podium-switch:has([data-scope=last_10].is-active):before{transform:translateX(100%)}
+.home-podium .podium-switch:has([data-scope=all].is-active):before{transform:translateX(200%)}
 .home-podium .podium-placeholder{opacity:.48;border-style:dashed;background:linear-gradient(145deg,#17253677,#101c2a77);box-shadow:none}
 .home-podium .podium-placeholder.podium-place-1{border-color:#e7bd6520}
 .home-podium .podium-placeholder .podium-rank{border-color:#ffffff10;background:#ffffff05;color:#71869a;box-shadow:none}
 @media(max-width:760px){.home-podium .podium-switch{width:100%;min-width:0}}
+@media(max-width:680px){.home-podium .podium-scope{min-width:0;padding:6px 3px;font-size:.68rem;line-height:1.15;white-space:normal}}
