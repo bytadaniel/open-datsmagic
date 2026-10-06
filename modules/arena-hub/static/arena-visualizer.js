@@ -538,7 +538,9 @@
       if (p.x < -radius || p.x > state.width + radius || p.y < -radius || p.y > state.height + radius) continue;
       ctx.moveTo(p.x + radius, p.y); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       if (radius >= 2.5) highlights.push([p.x - radius * .25, p.y - radius * .25, radius * .28]);
-      const showDenomination = embeddedObserver ? radius >= 2.5 : radius >= 6;
+      // Reveal values before the camera reaches its closest zoom. The compact
+      // homepage preview has less room, so it gets an even earlier threshold.
+      const showDenomination = embeddedObserver ? radius >= 1.7 : radius >= 3;
       if (showDenomination && Number.isFinite(Number(coin.points))) {
         labels.push({ x: p.x, y: p.y - radius - 9, value: formatCompactGold(coin.points) });
       }
